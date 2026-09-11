@@ -42,9 +42,27 @@ function serialize(orderRow, items, shipmentRow, paymentRow) {
       unitPrice: it.unit_price,
     })),
     shipment: shipmentRow ? { status: shipmentRow.status, trackingNumber: shipmentRow.tracking_number } : null,
-    payment: paymentRow ? { wompiTransactionId: paymentRow.wompi_transaction_id, status: paymentRow.status } : null,
+    payment: paymentRow ? { wompiTransactionId: paymentRow.wompi_transaction_id, status: paymentRow.status, paymentMethodType: paymentRow.payment_method_type } : null,
     createdAt: orderRow.created_at,
   };
+}
+
+// Métodos asíncronos (todo salvo CARD): Wompi no siempre trae la URL de
+// redirección en la respuesta de creación — hay que consultarla, igual que
+// etniapp-core (hasta 10 intentos cada 2s).
+async function pollForRedirectUrl(wompiTransactionId) {
+  for (let i = 0; i < 10; i++) {
+    const tx = await paymentService.getTransactionById(wompiTransactionId);
+    if (tx?.redirectUrl) return tx.redirectUrl;
+    await new Promise((r) => setTimeout(r, 2000));
+  }
+  return null;
+}
+
+function mapOrderStatus(wompiStatus) {
+  if (wompiStatus === 'APPROVED') return 'paid';
+  if (wompiStatus === 'PENDING') return 'pending';
+  return 'failed'; // DECLINED, VOIDED, ERROR
 }
 
 async function buildOrderFromLines(lines) {
@@ -113,12 +131,16 @@ export async function checkout(customerId, customerContact, lines, amountInCents
   // sea el resultado APPROVED o DECLINED — el estado del cobro viaja en
   // payment_transactions/orders.status, no en si la orden existe o no. Solo una
   // falla real de Wompi (HTTP no-2xx, red caída, body ilegible) impide persistir.
-  const charge = await paymentService.chargeCard({
+  if (!paymentMethod || !paymentMethod.type) {
+    throw new HttpError(400, { errors: ['paymentMethod.type es obligatorio.'] });
+  }
+
+  const charge = await paymentService.createTransaction({
     reference,
     amountInCents: Number(amountInCents),
     currency: 'COP',
     customerEmail: customerContact.email,
-    cardPaymentMethod: paymentMethod,
+    paymentMethod,
   });
 
   const conn = await pool.getConnection();
@@ -141,7 +163,7 @@ export async function checkout(customerId, customerContact, lines, amountInCents
       }
     }
 
-    const orderStatus = charge.status === 'APPROVED' ? 'paid' : 'failed';
+    const orderStatus = mapOrderStatus(charge.status);
     const [orderResult] = await conn.query(
       `INSERT INTO orders (customer_id, reference, idempotency_key, status, subtotal, shipping_cost, total, shipping_name, shipping_email, shipping_phone, shipping_address, shipping_city, notes)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
@@ -167,20 +189,40 @@ export async function checkout(customerId, customerContact, lines, amountInCents
 
     await conn.query(
       'INSERT INTO payment_transactions (order_id, wompi_transaction_id, status, amount_in_cents, currency, payment_method_type, raw_response) VALUES (?, ?, ?, ?, ?, ?, ?)',
-      [orderId, charge.wompiTransactionId, charge.status, charge.amountInCents, 'COP', 'CARD', JSON.stringify(charge.raw)]
+      [orderId, charge.wompiTransactionId, charge.status, charge.amountInCents, 'COP', paymentMethod.type, JSON.stringify(charge.raw)]
     );
 
     await conn.commit();
   } catch (err) {
     await conn.rollback();
-    // El pago ya fue capturado por Wompi en este punto: requiere reverso manual.
+
+    // El pago ya fue aceptado por Wompi en este punto (p.ej. carrera de stock perdida
+    // o error de DB) — se intenta un reverso automático antes de pedirle a soporte
+    // que lo haga a mano. Un void solo es válido el mismo día/antes de conciliación;
+    // si Wompi lo rechaza, cae al aviso de siempre con la referencia para reverso manual.
+    let voided = false;
+    try {
+      await paymentService.voidTransaction(charge.wompiTransactionId);
+      voided = true;
+    } catch (voidErr) {
+      console.error(JSON.stringify({ level: 'error', scope: 'wompi-void', reference, wompiTransactionId: charge.wompiTransactionId, message: voidErr.message }));
+    }
+
     console.error(JSON.stringify({
-      level: 'fatal-payment-orphan',
+      level: voided ? 'error-payment-reversed' : 'fatal-payment-orphan',
       reference,
       wompiTransactionId: charge.wompiTransactionId,
       amountInCents: charge.amountInCents,
+      voided,
       message: err.message,
     }));
+
+    if (voided) {
+      throw new HttpError(409, {
+        error: 'No pudimos confirmar tu pedido (el cobro fue revertido automáticamente, no se te cobró). Intenta de nuevo.',
+        reference,
+      });
+    }
     throw new HttpError(500, {
       error: 'El pago se procesó pero no pudimos confirmar tu pedido. Contacta soporte con esta referencia.',
       reference,
@@ -193,8 +235,10 @@ export async function checkout(customerId, customerContact, lines, amountInCents
   const order = await getForCustomer(customerId, orderId);
 
   // A diferencia de etniapp-core (que manda el correo de "confirmado" sin mirar el
-  // estado del cobro), aquí solo se envía si Wompi aprobó — mandar "tu pedido fue
-  // confirmado" sobre una tarjeta rechazada sería engañoso para el cliente.
+  // estado del cobro), aquí solo se envía si Wompi aprobó de una — mandar "tu pedido
+  // fue confirmado" sobre una tarjeta rechazada sería engañoso. Para métodos async
+  // que quedan en PENDING, el correo se manda cuando el webhook confirme el pago
+  // (ver wompiWebhookService.js), no aquí.
   if (charge.status === 'APPROVED') {
     try {
       await emailService.sendOrderConfirmation({
@@ -211,7 +255,54 @@ export async function checkout(customerId, customerContact, lines, amountInCents
     }
   }
 
-  return order;
+  // Métodos async (PSE/Nequi/Bancolombia/DaviPlata): si Wompi no trajo la URL de
+  // redirección en la respuesta de creación, se consulta por polling antes de
+  // devolver la orden al cliente — este backend nunca expone el redirect_url
+  // persistido, solo lo adjunta a esta respuesta puntual.
+  let redirectUrl = charge.redirectUrl;
+  if (!redirectUrl && paymentMethod.type !== 'CARD' && charge.status === 'PENDING') {
+    redirectUrl = await pollForRedirectUrl(charge.wompiTransactionId);
+  }
+
+  return redirectUrl ? { ...order, redirectUrl } : order;
+}
+
+// Llamado por el webhook de Wompi (wompiWebhookService.js) cuando llega un
+// transaction.updated para un método async que quedó en PENDING al crear la orden.
+// Solo manda el correo de confirmación en la transición hacia 'paid' (no en cada
+// webhook repetido de Wompi, que puede reenviar el mismo evento).
+export async function applyPaymentUpdate(wompiTransactionId, wompiStatus, rawTransaction) {
+  const [rows] = await pool.query(
+    `SELECT pt.order_id, pt.status AS previous_status, o.customer_id
+     FROM payment_transactions pt JOIN orders o ON o.id = pt.order_id
+     WHERE pt.wompi_transaction_id = ?`,
+    [wompiTransactionId]
+  );
+  const row = rows[0];
+  if (!row) return null; // transacción de otra app/ambiente, o no registrada todavía — se ignora
+
+  const newOrderStatus = mapOrderStatus(wompiStatus);
+  await pool.query('UPDATE payment_transactions SET status = ?, raw_response = ? WHERE wompi_transaction_id = ?', [wompiStatus, JSON.stringify(rawTransaction), wompiTransactionId]);
+  await pool.query('UPDATE orders SET status = ? WHERE id = ?', [newOrderStatus, row.order_id]);
+
+  if (newOrderStatus === 'paid' && row.previous_status !== 'APPROVED') {
+    const order = await getForCustomer(row.customer_id, row.order_id);
+    try {
+      await emailService.sendOrderConfirmation({
+        to: order.shippingContact.email,
+        fullName: order.shippingContact.fullName,
+        reference: order.reference,
+        items: order.items,
+        subtotal: order.subtotal,
+        shippingCost: order.shippingCost,
+        total: order.total,
+      });
+    } catch (err) {
+      console.error(JSON.stringify({ level: 'error', scope: 'email', reference: order.reference, message: err.message }));
+    }
+  }
+
+  return { orderId: row.order_id, status: newOrderStatus };
 }
 
 export async function listForCustomer(customerId) {

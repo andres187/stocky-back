@@ -3,7 +3,7 @@ import 'dotenv/config';
 const REQUIRED = [
   'DB_HOST', 'DB_USER', 'DB_NAME', 'JWT_SECRET',
   'CUSTOMER_JWT_SECRET',
-  'WOMPI_BASE_URL', 'WOMPI_PUBLIC_KEY', 'WOMPI_PRIVATE_KEY', 'WOMPI_INTEGRITY_KEY',
+  'WOMPI_BASE_URL', 'WOMPI_PUBLIC_KEY', 'WOMPI_PRIVATE_KEY', 'WOMPI_INTEGRITY_KEY', 'WOMPI_EVENTS_KEY',
 ];
 
 const missing = REQUIRED.filter((name) => !process.env[name]);
@@ -50,6 +50,7 @@ export const config = {
     publicKey: process.env.WOMPI_PUBLIC_KEY,
     privateKey: process.env.WOMPI_PRIVATE_KEY,
     integrityKey: process.env.WOMPI_INTEGRITY_KEY,
+    eventsKey: process.env.WOMPI_EVENTS_KEY,
   },
   // Resend es best-effort (ver emailService.js): a propósito no está en REQUIRED,
   // el checkout debe funcionar aunque el correo de confirmación no esté configurado.

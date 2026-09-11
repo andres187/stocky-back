@@ -9,10 +9,26 @@ export function computeSignature(reference, amountInCents, currency) {
     .digest('hex');
 }
 
-// Cobra una tarjeta ya tokenizada por Wompi en el cliente (este backend nunca ve
-// un PAN crudo). Lanza ANTES de cualquier escritura en DB: el llamador depende de
-// esto para garantizar que una orden solo se persiste si el cobro fue aprobado.
-export async function chargeCard({ reference, amountInCents, currency, customerEmail, cardPaymentMethod }) {
+function mapTransaction(transaction) {
+  return {
+    wompiTransactionId: transaction.id,
+    status: transaction.status,
+    amountInCents: transaction.amount_in_cents,
+    redirectUrl: transaction.redirect_url || transaction.payment_method?.extra?.async_payment_url || transaction.payment_method?.extra?.url || null,
+    raw: transaction,
+  };
+}
+
+// Crea una transacción en Wompi para CUALQUIER método de pago (CARD, PSE, NEQUI,
+// BANCOLOMBIA_TRANSFER, DAVIPLATA, ...). `paymentMethod` es el objeto { type, ... }
+// que ya viene armado por el cliente (o por su tokenización previa con Wompi) — este
+// backend lo reenvía casi sin tocarlo, nunca ve datos crudos de tarjeta.
+//
+// Wompi responde 2xx tanto para un cobro aprobado como rechazado (el resultado viaja
+// en el body, no en el código HTTP) — por eso esta función solo lanza ante un fallo
+// REAL de Wompi (no-2xx, red caída, body ilegible). El llamador decide qué hacer con
+// cada `status` (APPROVED/DECLINED/PENDING/...).
+export async function createTransaction({ reference, amountInCents, currency, customerEmail, paymentMethod }) {
   const signature = computeSignature(reference, amountInCents, currency);
 
   let res;
@@ -28,7 +44,7 @@ export async function chargeCard({ reference, amountInCents, currency, customerE
         amount_in_cents: amountInCents,
         currency,
         customer_email: customerEmail,
-        payment_method: { type: 'CARD', ...cardPaymentMethod },
+        payment_method: paymentMethod,
         reference,
         signature,
       }),
@@ -50,20 +66,41 @@ export async function chargeCard({ reference, amountInCents, currency, customerE
     throw new HttpError(502, 'No se pudo procesar el pago con el banco. Intenta de nuevo.');
   }
 
-  const transaction = body.data;
-
-  if (!transaction) {
+  if (!body.data) {
     throw new HttpError(502, 'No se pudo procesar el pago con el banco. Intenta de nuevo.');
   }
 
-  // Wompi responde 2xx tanto para una tarjeta aprobada como rechazada — el resultado
-  // viaja en transaction.status (APPROVED/DECLINED/...), no en el código HTTP. No se
-  // lanza aquí por un DECLINED: el llamador decide qué hacer con cada estado (igual
-  // que etniapp-core, que persiste la orden sin importar el resultado del cobro).
-  return {
-    wompiTransactionId: transaction.id,
-    status: transaction.status,
-    amountInCents: transaction.amount_in_cents,
-    raw: transaction,
-  };
+  return mapTransaction(body.data);
+}
+
+export async function chargeCard({ reference, amountInCents, currency, customerEmail, cardPaymentMethod }) {
+  return createTransaction({ reference, amountInCents, currency, customerEmail, paymentMethod: { type: 'CARD', ...cardPaymentMethod } });
+}
+
+// Polling para métodos async (PSE/Nequi/Bancolombia/DaviPlata): Wompi no siempre
+// trae la URL de redirección en la respuesta de creación, hay que consultarla.
+export async function getTransactionById(wompiTransactionId) {
+  const res = await fetch(`${config.wompi.baseUrl}/transactions/${wompiTransactionId}`, {
+    headers: { Authorization: `Bearer ${config.wompi.privateKey}` },
+  });
+  if (!res.ok) return null;
+  const body = await res.json();
+  if (!body.data) return null;
+  return mapTransaction(body.data);
+}
+
+// Reverso automático: se intenta cuando el cobro fue aceptado por Wompi pero la
+// persistencia local falló después (ver ordersService.checkout). Un void solo es
+// válido el mismo día/antes de la conciliación bancaria — si Wompi lo rechaza, el
+// llamador cae de vuelta al aviso "contacta soporte con esta referencia".
+export async function voidTransaction(wompiTransactionId) {
+  const res = await fetch(`${config.wompi.baseUrl}/transactions/${wompiTransactionId}/void`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${config.wompi.privateKey}` },
+  });
+  if (!res.ok) {
+    const body = await res.text().catch(() => '');
+    throw new Error(`No se pudo revertir la transacción ${wompiTransactionId}: HTTP ${res.status} ${body}`);
+  }
+  return true;
 }

@@ -12,6 +12,8 @@ import { categoriesRouter } from './routes/categories.js';
 import { colorsRouter } from './routes/colors.js';
 import { sizesRouter } from './routes/sizes.js';
 import { ordersRouter } from './routes/orders.js';
+import { adminShipmentsRouter } from './routes/adminShipments.js';
+import { wompiWebhookRouter } from './routes/wompiWebhook.js';
 
 const app = express();
 
@@ -28,6 +30,8 @@ app.use('/api/categories', categoriesRouter);
 app.use('/api/colors', colorsRouter);
 app.use('/api/sizes', sizesRouter);
 app.use('/api/orders', ordersRouter);
+app.use('/api/admin/shipments', adminShipmentsRouter);
+app.use('/api/webhooks/wompi', wompiWebhookRouter);
 
 app.use((req, res) => res.status(404).json({ error: 'Ruta no encontrada.' }));
 
