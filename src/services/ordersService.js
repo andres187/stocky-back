@@ -108,8 +108,11 @@ export async function checkout(customerId, customerContact, lines, amountInCents
 
   const reference = 'STK-' + crypto.randomUUID();
 
-  // El cobro ocurre ANTES de cualquier escritura en DB: si Wompi rechaza o falla,
-  // no se crea ninguna fila de orden. Esta es la propiedad central del flujo.
+  // El cobro ocurre ANTES de cualquier escritura en DB. A partir de aquí, igual que
+  // etniapp-core: si Wompi ACEPTÓ la solicitud (2xx), la orden se persiste siempre,
+  // sea el resultado APPROVED o DECLINED — el estado del cobro viaja en
+  // payment_transactions/orders.status, no en si la orden existe o no. Solo una
+  // falla real de Wompi (HTTP no-2xx, red caída, body ilegible) impide persistir.
   const charge = await paymentService.chargeCard({
     reference,
     amountInCents: Number(amountInCents),
@@ -138,10 +141,11 @@ export async function checkout(customerId, customerContact, lines, amountInCents
       }
     }
 
+    const orderStatus = charge.status === 'APPROVED' ? 'paid' : 'failed';
     const [orderResult] = await conn.query(
       `INSERT INTO orders (customer_id, reference, idempotency_key, status, subtotal, shipping_cost, total, shipping_name, shipping_email, shipping_phone, shipping_address, shipping_city, notes)
-       VALUES (?, ?, ?, 'paid', ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      [customerId, reference, idempotencyKey || null, subtotal, shippingCost, total, customerContact.fullName, customerContact.email, customerContact.phone, customerContact.address, customerContact.city, customerContact.notes || null]
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [customerId, reference, idempotencyKey || null, orderStatus, subtotal, shippingCost, total, customerContact.fullName, customerContact.email, customerContact.phone, customerContact.address, customerContact.city, customerContact.notes || null]
     );
     orderId = orderResult.insertId;
 
@@ -188,18 +192,23 @@ export async function checkout(customerId, customerContact, lines, amountInCents
 
   const order = await getForCustomer(customerId, orderId);
 
-  try {
-    await emailService.sendOrderConfirmation({
-      to: customerContact.email,
-      fullName: customerContact.fullName,
-      reference,
-      items: order.items,
-      subtotal,
-      shippingCost,
-      total,
-    });
-  } catch (err) {
-    console.error(JSON.stringify({ level: 'error', scope: 'email', reference, message: err.message }));
+  // A diferencia de etniapp-core (que manda el correo de "confirmado" sin mirar el
+  // estado del cobro), aquí solo se envía si Wompi aprobó — mandar "tu pedido fue
+  // confirmado" sobre una tarjeta rechazada sería engañoso para el cliente.
+  if (charge.status === 'APPROVED') {
+    try {
+      await emailService.sendOrderConfirmation({
+        to: customerContact.email,
+        fullName: customerContact.fullName,
+        reference,
+        items: order.items,
+        subtotal,
+        shippingCost,
+        total,
+      });
+    } catch (err) {
+      console.error(JSON.stringify({ level: 'error', scope: 'email', reference, message: err.message }));
+    }
   }
 
   return order;

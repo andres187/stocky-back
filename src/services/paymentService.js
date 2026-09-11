@@ -52,13 +52,14 @@ export async function chargeCard({ reference, amountInCents, currency, customerE
 
   const transaction = body.data;
 
-  if (!transaction || transaction.status !== 'APPROVED') {
-    console.error(JSON.stringify({
-      level: 'warn', scope: 'wompi', reference, wompiStatus: transaction?.status,
-    }));
-    throw new HttpError(402, { error: 'El pago fue rechazado por el banco.', wompiStatus: transaction?.status || 'ERROR' });
+  if (!transaction) {
+    throw new HttpError(502, 'No se pudo procesar el pago con el banco. Intenta de nuevo.');
   }
 
+  // Wompi responde 2xx tanto para una tarjeta aprobada como rechazada — el resultado
+  // viaja en transaction.status (APPROVED/DECLINED/...), no en el código HTTP. No se
+  // lanza aquí por un DECLINED: el llamador decide qué hacer con cada estado (igual
+  // que etniapp-core, que persiste la orden sin importar el resultado del cobro).
   return {
     wompiTransactionId: transaction.id,
     status: transaction.status,
