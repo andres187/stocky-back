@@ -1,7 +1,7 @@
 {
-  "name": "liva-backend",
+  "name": "stocky-backend",
   "version": "1.0.0",
-  "description": "API de LIVA — catálogo, autenticación de administrador y pedidos",
+  "description": "API de Stocky — catálogo, autenticación de administrador y pedidos",
   "main": "src/server.js",
   "type": "module",
   "scripts": {

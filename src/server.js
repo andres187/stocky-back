@@ -52,7 +52,7 @@ app.use((err, req, res, next) => {
 });
 
 const server = app.listen(config.port, () => {
-  console.log(`API de LIVA escuchando en http://localhost:${config.port}`);
+  console.log(`API de Stocky escuchando en http://localhost:${config.port}`);
 });
 
 function shutdown(signal) {

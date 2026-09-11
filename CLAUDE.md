@@ -15,16 +15,16 @@ Requires a `.env` file (copy from `.env.example`): `DB_HOST`, `DB_PORT`, `DB_USE
 
 ## Architecture
 
-This is the API for **LIVA**, a women's clothing e-commerce site. It is a standalone Express + MySQL service — **fully separate from the frontend**, which lives in the sibling `../web` project (React/Vite) and only talks to this API over HTTP (`VITE_API_URL`, default `http://localhost:4000/api`). There's no shared code or monorepo tooling between the two; they're run and deployed independently.
+This is the API for **Stocky**, a women's clothing e-commerce site. It is a standalone Express + MySQL service — **fully separate from the frontend**, which lives in the sibling `../web` project (React/Vite) and only talks to this API over HTTP (`VITE_API_URL`, default `http://localhost:4000/api`). There's no shared code or monorepo tooling between the two; they're run and deployed independently.
 
 ### Request flow
 
 `src/server.js` applies `helmet()`, `cors({ origin: CORS_ORIGIN, credentials: true })`, and `cookie-parser` before any route, then wires up five route groups under `/api`: `authRouter`, `productsRouter`, `categoriesRouter`, `colorsRouter`, `sizesRouter`. It also owns process lifecycle: `SIGTERM`/`SIGINT` close the HTTP server and the DB pool before exiting, and `unhandledRejection`/`uncaughtException` are logged at the process level as a last-resort safety net (routes should still handle their own errors — this isn't a substitute for that).
 
-- `authRouter` (`src/routes/auth.js`) — `POST /api/auth/login` (rate-limited: 10 requests / 15 min per IP via `express-rate-limit`) delegates credential checking to `services/authService.js`, then sets the returned JWT as an `httpOnly` cookie (`liva_admin_token`) — **the token is never returned in the JSON response body**. `POST /api/auth/logout` clears that cookie. `GET /api/auth/me` (protected) is how the frontend checks "is there a valid session?" on load, since JS can't read an `httpOnly` cookie directly.
+- `authRouter` (`src/routes/auth.js`) — `POST /api/auth/login` (rate-limited: 10 requests / 15 min per IP via `express-rate-limit`) delegates credential checking to `services/authService.js`, then sets the returned JWT as an `httpOnly` cookie (`stocky_admin_token`) — **the token is never returned in the JSON response body**. `POST /api/auth/logout` clears that cookie. `GET /api/auth/me` (protected) is how the frontend checks "is there a valid session?" on load, since JS can't read an `httpOnly` cookie directly.
 - `productsRouter`/`categoriesRouter`/`colorsRouter`/`sizesRouter` — public reads, `requireAuth`-gated writes (see below).
 
-`src/middleware/auth.js` (`requireAuth`) reads the JWT from the `liva_admin_token` cookie (`req.cookies`, populated by `cookie-parser`) — **not** an `Authorization` header — verifies it with `JWT_SECRET`, and attaches the decoded payload to `req.admin`. There is only one admin role — no permission levels. Because auth is cookie-based, any client calling this API (including the frontend's `apiFetch`) must send requests with credentials/cookies included, or `requireAuth` will always 401.
+`src/middleware/auth.js` (`requireAuth`) reads the JWT from the `stocky_admin_token` cookie (`req.cookies`, populated by `cookie-parser`) — **not** an `Authorization` header — verifies it with `JWT_SECRET`, and attaches the decoded payload to `req.admin`. There is only one admin role — no permission levels. Because auth is cookie-based, any client calling this API (including the frontend's `apiFetch`) must send requests with credentials/cookies included, or `requireAuth` will always 401.
 
 ### Service layer
 

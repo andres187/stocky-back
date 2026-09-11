@@ -6,7 +6,7 @@ import * as authService from '../services/authService.js';
 
 export const authRouter = Router();
 
-const COOKIE_NAME = 'liva_admin_token';
+const COOKIE_NAME = 'stocky_admin_token';
 const COOKIE_MAX_AGE_MS = 8 * 60 * 60 * 1000; // debe coincidir con JWT_EXPIRES_IN
 
 const loginLimiter = rateLimit({

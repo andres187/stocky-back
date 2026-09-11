@@ -1,11 +1,11 @@
 ---
 name: web-payments-best-practices
-description: Checklist of best practices for integrating a real web payment/checkout flow (PCI scope, tokenization, server-side amount verification, idempotency, webhooks, refunds) — for building LIVA's real checkout against a payment provider, or auditing an existing payment integration. Use when writing or changing anything related to checkout, payments, orders, or a payment provider SDK/webhook, or when asked to "review payments" or "audit checkout security".
+description: Checklist of best practices for integrating a real web payment/checkout flow (PCI scope, tokenization, server-side amount verification, idempotency, webhooks, refunds) — for building Stocky's real checkout against a payment provider, or auditing an existing payment integration. Use when writing or changing anything related to checkout, payments, orders, or a payment provider SDK/webhook, or when asked to "review payments" or "audit checkout security".
 ---
 
 # Web payments best practices
 
-LIVA's current `Checkout.jsx` is a client-only mock (fake order number, no real charge, no backend call). This skill applies once that becomes a real payment integration. Use it both proactively (while building the real flow) and reactively (auditing it once it exists). Each item explains *why* it matters. This is provider-agnostic (Stripe, Wompi, PayU, MercadoPago, ePayco — common choices for a Colombian storefront like this one — all share these fundamentals).
+Stocky's current `Checkout.jsx` is a client-only mock (fake order number, no real charge, no backend call). This skill applies once that becomes a real payment integration. Use it both proactively (while building the real flow) and reactively (auditing it once it exists). Each item explains *why* it matters. This is provider-agnostic (Stripe, Wompi, PayU, MercadoPago, ePayco — common choices for a Colombian storefront like this one — all share these fundamentals).
 
 ## Checklist
 
@@ -15,7 +15,7 @@ LIVA's current `Checkout.jsx` is a client-only mock (fake order number, no real 
 4. **Idempotency keys on payment-creation requests.** A retried request (network blip, double-click, browser back button) must not create two charges for the same order — pass an idempotency key (most providers support this natively) derived from the order id.
 5. **Webhooks are verified by signature, not trusted on content alone.** The provider sends a signature header computed with a shared secret; the backend must verify it before trusting a "payment succeeded" webhook payload — otherwise anyone can POST a fake "paid" event to your endpoint.
 6. **Order state is only finalized from the webhook/confirmed callback, not from the client-side "success" redirect.** A user can close the tab or lose connection right after paying but before the redirect fires; the webhook is the source of truth for "did this actually get paid."
-7. **Stock is decremented atomically and only on confirmed payment**, inside a transaction, checking availability again at that moment — not when the item was added to the cart. (LIVA already has per-variant `variant_stock`; when checkout becomes real, the decrement belongs here, guarded by a transaction — see the `database-best-practices` skill.)
+7. **Stock is decremented atomically and only on confirmed payment**, inside a transaction, checking availability again at that moment — not when the item was added to the cart. (Stocky already has per-variant `variant_stock`; when checkout becomes real, the decrement belongs here, guarded by a transaction — see the `database-best-practices` skill.)
 8. **Test/sandbox and live keys are kept in separate env vars and never mixed.** A live secret key committed or used in a dev environment is a real financial risk, not just a bug.
 9. **Amounts are stored and compared in the smallest currency unit or with explicit precision handling.** For COP (no minor unit in practice, but still): keep the app consistent about integers vs. decimals end-to-end (frontend display, backend calculation, provider API) — silent float rounding is a classic source of off-by-one-peso mismatches that break idempotent comparisons.
 10. **Sensitive payment details are never logged.** Log the order id, provider transaction id, and status — not full card metadata, CVV, or full webhook payloads containing customer payment details.
