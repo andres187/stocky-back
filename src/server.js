@@ -6,10 +6,14 @@ import { config } from './config.js';
 import { pool } from './db/pool.js';
 import { HttpError } from './services/errors.js';
 import { authRouter } from './routes/auth.js';
+import { customerAuthRouter } from './routes/customerAuth.js';
 import { productsRouter } from './routes/products.js';
 import { categoriesRouter } from './routes/categories.js';
 import { colorsRouter } from './routes/colors.js';
 import { sizesRouter } from './routes/sizes.js';
+import { ordersRouter } from './routes/orders.js';
+import { adminShipmentsRouter } from './routes/adminShipments.js';
+import { wompiWebhookRouter } from './routes/wompiWebhook.js';
 
 const app = express();
 
@@ -20,10 +24,14 @@ app.use(express.json());
 
 app.get('/api/health', (req, res) => res.json({ ok: true }));
 app.use('/api/auth', authRouter);
+app.use('/api/customer-auth', customerAuthRouter);
 app.use('/api/products', productsRouter);
 app.use('/api/categories', categoriesRouter);
 app.use('/api/colors', colorsRouter);
 app.use('/api/sizes', sizesRouter);
+app.use('/api/orders', ordersRouter);
+app.use('/api/admin/shipments', adminShipmentsRouter);
+app.use('/api/webhooks/wompi', wompiWebhookRouter);
 
 app.use((req, res) => res.status(404).json({ error: 'Ruta no encontrada.' }));
 

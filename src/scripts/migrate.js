@@ -127,6 +127,140 @@ async function main() {
     if (err.code !== 'ER_DUP_KEYNAME') throw err;
   }
 
+  await conn.query(`
+    CREATE TABLE IF NOT EXISTS customers (
+      id INT PRIMARY KEY AUTO_INCREMENT,
+      email VARCHAR(190) NOT NULL UNIQUE,
+      password_hash VARCHAR(255) NOT NULL,
+      full_name VARCHAR(160) NOT NULL,
+      phone VARCHAR(30) NULL,
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    ) ENGINE=InnoDB CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+  `);
+
+  await conn.query(`
+    CREATE TABLE IF NOT EXISTS orders (
+      id INT PRIMARY KEY AUTO_INCREMENT,
+      customer_id INT NOT NULL,
+      reference VARCHAR(64) NOT NULL UNIQUE,
+      idempotency_key VARCHAR(64) NULL,
+      status ENUM('pending', 'paid', 'failed') NOT NULL DEFAULT 'pending',
+      subtotal INT NOT NULL,
+      shipping_cost INT NOT NULL,
+      total INT NOT NULL,
+      shipping_name VARCHAR(160) NOT NULL,
+      shipping_email VARCHAR(190) NOT NULL,
+      shipping_phone VARCHAR(30) NOT NULL,
+      shipping_address VARCHAR(255) NOT NULL,
+      shipping_city VARCHAR(120) NOT NULL,
+      notes VARCHAR(280) NULL,
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+    ) ENGINE=InnoDB CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+  `);
+
+  try {
+    await conn.query(
+      'ALTER TABLE orders ADD CONSTRAINT fk_orders_customer FOREIGN KEY (customer_id) REFERENCES customers(id) ON DELETE RESTRICT ON UPDATE RESTRICT'
+    );
+  } catch (err) {
+    if (err.code !== 'ER_FK_DUP_NAME' && err.errno !== 1826) throw err;
+  }
+
+  try {
+    await conn.query('ALTER TABLE orders ADD UNIQUE KEY uq_orders_customer_idempotency (customer_id, idempotency_key)');
+  } catch (err) {
+    if (err.code !== 'ER_DUP_KEYNAME') throw err;
+  }
+
+  try {
+    await conn.query('ALTER TABLE orders ADD INDEX idx_orders_customer (customer_id)');
+  } catch (err) {
+    if (err.code !== 'ER_DUP_KEYNAME') throw err;
+  }
+
+  await conn.query(`
+    CREATE TABLE IF NOT EXISTS order_items (
+      id INT PRIMARY KEY AUTO_INCREMENT,
+      order_id INT NOT NULL,
+      product_id INT NOT NULL,
+      product_name VARCHAR(160) NOT NULL,
+      color VARCHAR(60) NOT NULL,
+      size VARCHAR(20) NOT NULL,
+      quantity INT NOT NULL,
+      unit_price INT NOT NULL
+    ) ENGINE=InnoDB CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+  `);
+
+  try {
+    await conn.query(
+      'ALTER TABLE order_items ADD CONSTRAINT fk_order_items_order FOREIGN KEY (order_id) REFERENCES orders(id) ON DELETE CASCADE ON UPDATE RESTRICT'
+    );
+  } catch (err) {
+    if (err.code !== 'ER_FK_DUP_NAME' && err.errno !== 1826) throw err;
+  }
+
+  try {
+    await conn.query(
+      'ALTER TABLE order_items ADD CONSTRAINT fk_order_items_product FOREIGN KEY (product_id) REFERENCES products(id) ON DELETE RESTRICT ON UPDATE RESTRICT'
+    );
+  } catch (err) {
+    if (err.code !== 'ER_FK_DUP_NAME' && err.errno !== 1826) throw err;
+  }
+
+  try {
+    await conn.query('ALTER TABLE order_items ADD INDEX idx_order_items_order (order_id)');
+  } catch (err) {
+    if (err.code !== 'ER_DUP_KEYNAME') throw err;
+  }
+
+  try {
+    await conn.query('ALTER TABLE order_items ADD INDEX idx_order_items_product (product_id)');
+  } catch (err) {
+    if (err.code !== 'ER_DUP_KEYNAME') throw err;
+  }
+
+  await conn.query(`
+    CREATE TABLE IF NOT EXISTS shipments (
+      id INT PRIMARY KEY AUTO_INCREMENT,
+      order_id INT NOT NULL UNIQUE,
+      status ENUM('pending', 'shipped', 'delivered') NOT NULL DEFAULT 'pending',
+      tracking_number VARCHAR(100) NULL,
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+    ) ENGINE=InnoDB CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+  `);
+
+  try {
+    await conn.query(
+      'ALTER TABLE shipments ADD CONSTRAINT fk_shipments_order FOREIGN KEY (order_id) REFERENCES orders(id) ON DELETE CASCADE ON UPDATE RESTRICT'
+    );
+  } catch (err) {
+    if (err.code !== 'ER_FK_DUP_NAME' && err.errno !== 1826) throw err;
+  }
+
+  await conn.query(`
+    CREATE TABLE IF NOT EXISTS payment_transactions (
+      id INT PRIMARY KEY AUTO_INCREMENT,
+      order_id INT NOT NULL UNIQUE,
+      wompi_transaction_id VARCHAR(64) NOT NULL UNIQUE,
+      status VARCHAR(30) NOT NULL,
+      amount_in_cents BIGINT NOT NULL,
+      currency VARCHAR(3) NOT NULL DEFAULT 'COP',
+      payment_method_type VARCHAR(30) NOT NULL,
+      raw_response JSON NULL,
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    ) ENGINE=InnoDB CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+  `);
+
+  try {
+    await conn.query(
+      'ALTER TABLE payment_transactions ADD CONSTRAINT fk_payment_transactions_order FOREIGN KEY (order_id) REFERENCES orders(id) ON DELETE RESTRICT ON UPDATE RESTRICT'
+    );
+  } catch (err) {
+    if (err.code !== 'ER_FK_DUP_NAME' && err.errno !== 1826) throw err;
+  }
+
   console.log('Migración completa: base de datos y tablas listas.');
   await conn.end();
 }

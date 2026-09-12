@@ -118,12 +118,28 @@ async function seedProducts() {
   console.log(`${PRODUCTS.length} productos sembrados.`);
 }
 
+async function seedTestCustomer() {
+  const email = 'cliente.prueba@stocky.test';
+  const [rows] = await pool.query('SELECT id FROM customers WHERE email = ?', [email]);
+  if (rows.length > 0) {
+    console.log('El cliente de prueba ya existe, no se duplica.');
+    return;
+  }
+  const hash = await bcrypt.hash('prueba1234', 12);
+  await pool.query(
+    'INSERT INTO customers (email, password_hash, full_name, phone) VALUES (?, ?, ?, ?)',
+    [email, hash, 'Cliente de Prueba', '3001234567']
+  );
+  console.log(`Cliente de prueba "${email}" creado (contraseña: prueba1234).`);
+}
+
 async function main() {
   await seedAdmin();
   await seedCategories();
   await seedColors();
   await seedSizes();
   await seedProducts();
+  await seedTestCustomer();
   await pool.end();
 }
 
