@@ -104,3 +104,40 @@ export async function voidTransaction(wompiTransactionId) {
   }
   return true;
 }
+
+// Lista de bancos habilitados para PSE. Cambia poco durante el día, así que se
+// cachea en memoria 1h — evita golpear a Wompi en cada carga del formulario de
+// pago. Usa la llave pública porque es un endpoint informativo, no de cobro.
+let pseBanksCache = null;
+let pseBanksCachedAt = 0;
+const PSE_BANKS_TTL_MS = 60 * 60 * 1000;
+
+export async function listPseBanks() {
+  const now = Date.now();
+  if (pseBanksCache && now - pseBanksCachedAt < PSE_BANKS_TTL_MS) return pseBanksCache;
+
+  let res;
+  try {
+    res = await fetch(`${config.wompi.baseUrl}/pse/financial_institutions`, {
+      headers: { Authorization: `Bearer ${config.wompi.publicKey}` },
+    });
+  } catch (err) {
+    console.error(JSON.stringify({ level: 'error', scope: 'wompi', message: err.message }));
+    throw new HttpError(502, 'No se pudo obtener la lista de bancos PSE. Intenta de nuevo.');
+  }
+
+  let body;
+  try {
+    body = await res.json();
+  } catch {
+    throw new HttpError(502, 'No se pudo obtener la lista de bancos PSE. Intenta de nuevo.');
+  }
+
+  if (!res.ok || !Array.isArray(body.data)) {
+    throw new HttpError(502, 'No se pudo obtener la lista de bancos PSE. Intenta de nuevo.');
+  }
+
+  pseBanksCache = body.data.map((bank) => ({ code: bank.financial_institution_code, name: bank.financial_institution_name }));
+  pseBanksCachedAt = now;
+  return pseBanksCache;
+}

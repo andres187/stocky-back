@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import { requireAuth } from '../middleware/auth.js';
 import * as productsService from '../services/productsService.js';
+import * as reviewsService from '../services/reviewsService.js';
 
 export const productsRouter = Router();
 
@@ -16,6 +17,11 @@ productsRouter.get('/admin', requireAuth, async (req, res) => {
 
 productsRouter.get('/:id', async (req, res) => {
   res.json(await productsService.getById(req.params.id));
+});
+
+// GET /api/products/:id/reviews — público, comentarios publicados de un producto
+productsRouter.get('/:id/reviews', async (req, res) => {
+  res.json(await reviewsService.listForProduct(req.params.id));
 });
 
 productsRouter.post('/', requireAuth, async (req, res) => {

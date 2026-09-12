@@ -19,6 +19,8 @@ import { sizesRouter } from './routes/sizes.js';
 import { ordersRouter } from './routes/orders.js';
 import { adminShipmentsRouter } from './routes/adminShipments.js';
 import { wompiWebhookRouter } from './routes/wompiWebhook.js';
+import { reviewsRouter } from './routes/reviews.js';
+import { paymentsRouter } from './routes/payments.js';
 
 const app = express();
 
@@ -38,6 +40,8 @@ app.use('/api/categories', categoriesRouter);
 app.use('/api/colors', colorsRouter);
 app.use('/api/sizes', sizesRouter);
 app.use('/api/orders', ordersRouter);
+app.use('/api/reviews', reviewsRouter);
+app.use('/api/payments', paymentsRouter);
 app.use('/api/admin/shipments', adminShipmentsRouter);
 app.use('/api/admin/seller-sales', adminSellerSalesRouter);
 app.use('/api/admin/reports', adminReportsRouter);
