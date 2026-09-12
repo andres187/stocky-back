@@ -42,6 +42,23 @@ async function main() {
     ) ENGINE=InnoDB;
   `);
 
+  // Dueños de la ropa (consignación): registran su cuenta desde la tienda y quedan
+  // 'pending' hasta que un admin las aprueba. commission_rate es el % que se queda
+  // la tienda sobre cada venta suya.
+  await conn.query(`
+    CREATE TABLE IF NOT EXISTS sellers (
+      id INT PRIMARY KEY AUTO_INCREMENT,
+      email VARCHAR(190) NOT NULL UNIQUE,
+      password_hash VARCHAR(255) NOT NULL,
+      full_name VARCHAR(160) NOT NULL,
+      phone VARCHAR(30) NULL,
+      commission_rate DECIMAL(5,2) NOT NULL DEFAULT 0,
+      status ENUM('pending', 'approved', 'rejected') NOT NULL DEFAULT 'pending',
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+    ) ENGINE=InnoDB CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+  `);
+
   await conn.query(`
     CREATE TABLE IF NOT EXISTS products (
       id INT PRIMARY KEY AUTO_INCREMENT,
@@ -66,6 +83,8 @@ async function main() {
   for (const ddl of [
     'ALTER TABLE products ADD COLUMN bestseller_order INT NULL',
     'ALTER TABLE products ADD COLUMN variant_stock JSON NULL',
+    // NULL = producto de la tienda (el catálogo que existía antes de los dueños).
+    'ALTER TABLE products ADD COLUMN seller_id INT NULL',
   ]) {
     try {
       await conn.query(ddl);
@@ -118,6 +137,20 @@ async function main() {
     );
   } catch (err) {
     if (err.code !== 'ER_FK_DUP_NAME' && err.errno !== 1826) throw err;
+  }
+
+  try {
+    await conn.query(
+      'ALTER TABLE products ADD CONSTRAINT fk_products_seller FOREIGN KEY (seller_id) REFERENCES sellers(id) ON DELETE RESTRICT ON UPDATE RESTRICT'
+    );
+  } catch (err) {
+    if (err.code !== 'ER_FK_DUP_NAME' && err.errno !== 1826) throw err;
+  }
+
+  try {
+    await conn.query('ALTER TABLE products ADD INDEX idx_products_seller (seller_id)');
+  } catch (err) {
+    if (err.code !== 'ER_DUP_KEYNAME') throw err;
   }
 
   // Índice para el filtro `WHERE active = 1` que corre en cada carga de la tienda.
@@ -188,9 +221,32 @@ async function main() {
       color VARCHAR(60) NOT NULL,
       size VARCHAR(20) NOT NULL,
       quantity INT NOT NULL,
-      unit_price INT NOT NULL
+      unit_price INT NOT NULL,
+      seller_id INT NULL,
+      commission_rate DECIMAL(5,2) NULL
     ) ENGINE=InnoDB CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
   `);
+
+  // Snapshots al momento de la compra, misma razón que product_name/unit_price: si
+  // mañana cambia la comisión del dueño o el producto pasa a otro dueño, la
+  // liquidación histórica no se mueve. A propósito sin FK a sellers — el historial
+  // nunca debe bloquear el borrado de un dueño.
+  for (const ddl of [
+    'ALTER TABLE order_items ADD COLUMN seller_id INT NULL',
+    'ALTER TABLE order_items ADD COLUMN commission_rate DECIMAL(5,2) NULL',
+  ]) {
+    try {
+      await conn.query(ddl);
+    } catch (err) {
+      if (err.code !== 'ER_DUP_FIELDNAME') throw err;
+    }
+  }
+
+  try {
+    await conn.query('ALTER TABLE order_items ADD INDEX idx_order_items_seller (seller_id)');
+  } catch (err) {
+    if (err.code !== 'ER_DUP_KEYNAME') throw err;
+  }
 
   try {
     await conn.query(

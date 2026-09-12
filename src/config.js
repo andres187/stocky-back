@@ -3,6 +3,7 @@ import 'dotenv/config';
 const REQUIRED = [
   'DB_HOST', 'DB_USER', 'DB_NAME', 'JWT_SECRET',
   'CUSTOMER_JWT_SECRET',
+  'SELLER_JWT_SECRET',
   'WOMPI_BASE_URL', 'WOMPI_PUBLIC_KEY', 'WOMPI_PRIVATE_KEY', 'WOMPI_INTEGRITY_KEY', 'WOMPI_EVENTS_KEY',
 ];
 
@@ -44,6 +45,10 @@ export const config = {
   customerJwt: {
     secret: process.env.CUSTOMER_JWT_SECRET,
     expiresIn: process.env.CUSTOMER_JWT_EXPIRES_IN || '8h',
+  },
+  sellerJwt: {
+    secret: process.env.SELLER_JWT_SECRET,
+    expiresIn: process.env.SELLER_JWT_EXPIRES_IN || '8h',
   },
   wompi: {
     baseUrl: process.env.WOMPI_BASE_URL,

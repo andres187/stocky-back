@@ -76,7 +76,14 @@ async function buildOrderFromLines(lines) {
   }
 
   const productIds = [...new Set(lines.map((l) => Number(l.productId)))];
-  const [rows] = await pool.query('SELECT id, name, price, active, variant_stock FROM products WHERE id IN (?)', [productIds]);
+  // La comisión del dueño se lee aquí y se congela en order_items (ver migrate.js):
+  // la liquidación histórica no debe cambiar si mañana se renegocia el porcentaje.
+  const [rows] = await pool.query(
+    `SELECT p.id, p.name, p.price, p.active, p.variant_stock, p.seller_id, s.commission_rate
+     FROM products p LEFT JOIN sellers s ON s.id = p.seller_id
+     WHERE p.id IN (?)`,
+    [productIds]
+  );
   const byId = new Map(rows.map((r) => [r.id, r]));
 
   const resolvedLines = [];
@@ -97,6 +104,8 @@ async function buildOrderFromLines(lines) {
       size: line.size,
       quantity: Number(line.quantity),
       unitPrice: product.price,
+      sellerId: product.seller_id ?? null,
+      commissionRate: product.seller_id == null ? null : Number(product.commission_rate),
     });
   }
 
@@ -173,8 +182,8 @@ export async function checkout(customerId, customerContact, lines, amountInCents
 
     for (const line of resolvedLines) {
       await conn.query(
-        'INSERT INTO order_items (order_id, product_id, product_name, color, size, quantity, unit_price) VALUES (?, ?, ?, ?, ?, ?, ?)',
-        [orderId, line.productId, line.productName, line.color, line.size, line.quantity, line.unitPrice]
+        'INSERT INTO order_items (order_id, product_id, product_name, color, size, quantity, unit_price, seller_id, commission_rate) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
+        [orderId, line.productId, line.productName, line.color, line.size, line.quantity, line.unitPrice, line.sellerId, line.commissionRate]
       );
 
       const fresh = freshById.get(line.productId);
