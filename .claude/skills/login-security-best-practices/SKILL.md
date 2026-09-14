@@ -7,6 +7,8 @@ description: Checklist of login/authentication security best practices (password
 
 Use this checklist both proactively (while building or changing auth flows) and reactively (when asked to audit an existing login system). This applies on both sides of an app: the frontend that holds and sends a token, and the backend that issues and verifies it. Each item explains *why* it matters.
 
+**Before starting:** update your branch against `main`/`origin` (fetch + rebase or merge) so you're working from the latest changes, not a stale checkout — do this again before opening a PR.
+
 ## Checklist
 
 1. **Passwords are hashed with a slow, salted algorithm** — bcrypt (cost ≥ 10, 12 is a more current default) or argon2, never a fast hash (MD5/SHA-1/SHA-256 alone) and never reversible encryption or plaintext.

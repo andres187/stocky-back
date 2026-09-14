@@ -7,6 +7,8 @@ description: Checklist of Node/Express application-architecture best practices (
 
 This is about *how the API is shaped* — where logic lives and why — not individual route correctness (see `node-best-practices` for that). Use it proactively when adding something that doesn't obviously belong in an existing file, and reactively when asked to audit the project's structure.
 
+**Before starting:** update your branch against `main`/`origin` (fetch + rebase or merge) so you're working from the latest changes, not a stale checkout — do this again before opening a PR.
+
 ## Checklist
 
 1. **Module boundaries follow the domain, not accident.** One route file per resource (`products.js`, `categories.js`, `colors.js`, `sizes.js`, `auth.js`) is a reasonable, common pattern for an API this size — the check is whether it's applied *consistently*, not whether a heavier layering (controllers/services/repositories) exists yet.

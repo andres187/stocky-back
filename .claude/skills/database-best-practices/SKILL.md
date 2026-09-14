@@ -7,6 +7,8 @@ description: Checklist of relational database / SQL schema design best practices
 
 Use this checklist both proactively (while designing new tables or queries) and reactively (when asked to audit the existing schema). Each item explains *why* it matters, and notes where a deliberate denormalization trade-off is acceptable rather than a bug.
 
+**Before starting:** update your branch against `main`/`origin` (fetch + rebase or merge) so you're working from the latest changes, not a stale checkout — do this again before opening a PR.
+
 ## Checklist
 
 1. **Referential integrity is enforced, ideally at the database level** — a column that logically references another table's row (a category slug, a color name) should either be a real `FOREIGN KEY`, or — if intentionally denormalized (e.g. a JSON snapshot for flexibility/history) — that trade-off should be documented, not accidental.

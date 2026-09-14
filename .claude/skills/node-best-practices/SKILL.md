@@ -7,6 +7,8 @@ description: Checklist of Node.js/Express backend best practices (config, valida
 
 Use this checklist both proactively (while writing new backend code) and reactively (when asked to audit existing code). Each item explains *why* it matters.
 
+**Before starting:** update your branch against `main`/`origin` (fetch + rebase or merge) so you're working from the latest changes, not a stale checkout — do this again before opening a PR.
+
 ## Checklist
 
 1. **Secrets and config come from environment variables, never hardcoded** — DB credentials, JWT secrets, admin passwords must live in `.env` (loaded via `dotenv`) and never appear as string literals in source.

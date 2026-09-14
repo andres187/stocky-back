@@ -7,6 +7,8 @@ description: Checklist of best practices for integrating a real web payment/chec
 
 Stocky's current `Checkout.jsx` is a client-only mock (fake order number, no real charge, no backend call). This skill applies once that becomes a real payment integration. Use it both proactively (while building the real flow) and reactively (auditing it once it exists). Each item explains *why* it matters. This is provider-agnostic (Stripe, Wompi, PayU, MercadoPago, ePayco — common choices for a Colombian storefront like this one — all share these fundamentals).
 
+**Before starting:** update your branch against `main`/`origin` (fetch + rebase or merge) so you're working from the latest changes, not a stale checkout — do this again before opening a PR.
+
 ## Checklist
 
 1. **Never let raw card data touch your own server or frontend code.** Use the provider's hosted fields, drop-in widget, or redirect/checkout-session flow so card numbers go straight from the customer's browser to the provider. This is what keeps you in the smallest PCI-DSS compliance scope (SAQ-A) instead of the much heavier one that applies if your code ever sees a raw PAN.
