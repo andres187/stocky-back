@@ -1,5 +1,7 @@
 import { pool } from '../db/pool.js';
 import { HttpError } from './errors.js';
+import { PAID_ONLY } from './reportsService.js';
+import { seededShuffle, interleaveByCategory, hasStock, withCache, invalidate } from './rotationService.js';
 
 // Todas las lecturas salen por aquí para que `sellerName` (el nombre del dueño de la
 // ropa) venga siempre resuelto. seller_id NULL = producto de la tienda.
@@ -91,7 +93,7 @@ async function insertProduct(payload, curated) {
   return getById(result.insertId);
 }
 
-export async function listPublic(categoria) {
+async function queryPublic(categoria) {
   let sql = SELECT_BASE + ' WHERE p.active = 1';
   const params = [];
 
@@ -111,6 +113,20 @@ export async function listPublic(categoria) {
   return rows.map(serialize);
 }
 
+// Vitrina pública: mismo catálogo, pero mezclado por ventana de tiempo (ver
+// rotationService.js). Las prendas con stock rotan y se intercalan por categoría
+// para que la primera página no quede toda de una sola; las agotadas se dejan al
+// final, en su orden de siempre, para no premiarlas con una posición aleatoria.
+export async function listPublic(categoria) {
+  return withCache(`listPublic:${categoria || 'todo'}`, async (seed) => {
+    const products = await queryPublic(categoria);
+    const disponibles = products.filter(hasStock);
+    const agotados = products.filter((p) => !hasStock(p));
+    const rotados = interleaveByCategory(seededShuffle(disponibles, seed), seed);
+    return [...rotados, ...agotados];
+  });
+}
+
 export async function listAdmin() {
   const [rows] = await pool.query(SELECT_BASE + ' ORDER BY p.created_at DESC');
   return rows.map(serialize);
@@ -124,10 +140,12 @@ export async function getById(id) {
 
 export async function create(payload) {
   await validatePayload(payload);
-  return insertProduct(payload, {
+  const product = await insertProduct(payload, {
     bestsellerOrder: payload.bestsellerOrder || null,
     sellerId: payload.sellerId || null,
   });
+  invalidate();
+  return product;
 }
 
 export async function update(id, payload) {
@@ -140,12 +158,14 @@ export async function update(id, payload) {
   );
 
   if (result.affectedRows === 0) throw new HttpError(404, 'Producto no encontrado.');
+  invalidate();
   return getById(id);
 }
 
 export async function remove(id) {
   const [result] = await pool.query('DELETE FROM products WHERE id = ?', [id]);
   if (result.affectedRows === 0) throw new HttpError(404, 'Producto no encontrado.');
+  invalidate();
 }
 
 // --- Portal del dueño ---------------------------------------------------------
@@ -166,7 +186,9 @@ export async function getForSeller(sellerId, id) {
 
 export async function createForSeller(sellerId, payload) {
   await validatePayload(payload, { allowCuration: false });
-  return insertProduct(payload, { bestsellerOrder: null, sellerId });
+  const product = await insertProduct(payload, { bestsellerOrder: null, sellerId });
+  invalidate();
+  return product;
 }
 
 export async function updateForSeller(sellerId, id, payload) {
@@ -190,10 +212,117 @@ export async function updateForSeller(sellerId, id, payload) {
     // distinguir los dos casos.
     await getForSeller(sellerId, id);
   }
+  invalidate();
   return getForSeller(sellerId, id);
 }
 
 export async function removeForSeller(sellerId, id) {
   const [result] = await pool.query('DELETE FROM products WHERE id = ? AND seller_id = ?', [id, sellerId]);
   if (result.affectedRows === 0) throw new HttpError(404, 'Producto no encontrado.');
+  invalidate();
+}
+
+// --- Vitrina: destacados y sugeridos -----------------------------------------
+// Tope duro de los endpoints públicos de vitrina — evita que un ?limit= grande
+// fuerce una consulta cara. Mismo patrón que reportsService.js, con topes propios
+// porque estas franjas son visualmente pequeñas (no listados completos).
+function clampShowcaseLimit(limit, fallback) {
+  const n = Number(limit);
+  if (!Number.isFinite(n) || n <= 0) return fallback;
+  return Math.min(Math.trunc(n), 12);
+}
+
+// Productos con más unidades vendidas (pedidos pagados) en las últimas 48h,
+// como candidatos ordenados por volumen. No es la lista final: solo insumo para
+// destacados().
+async function topSellingIds(hours = 48) {
+  const [rows] = await pool.query(
+    `SELECT oi.product_id, SUM(oi.quantity) AS units
+     FROM order_items oi
+     JOIN orders o ON o.id = oi.order_id
+     WHERE ${PAID_ONLY} AND o.created_at >= NOW() - INTERVAL ? HOUR
+     GROUP BY oi.product_id
+     ORDER BY units DESC
+     LIMIT 24`,
+    [hours]
+  );
+  return rows.map((r) => ({ id: r.product_id, units: Number(r.units) }));
+}
+
+// "Más vendidos" real: ventas de las últimas 48h primero (agrupadas en empates de
+// unidades y mezcladas entre sí para que también roten dentro de la hora), luego
+// la curaduría manual del admin (bestsellerOrder) y por último novedades — así la
+// franja nunca queda vacía aunque la tienda lleve poco movimiento.
+export async function destacados(limit) {
+  const lim = clampShowcaseLimit(limit, 3);
+  return withCache(`destacados:${lim}`, async (seed) => {
+    const allProducts = (await queryPublic('todo')).filter(hasStock);
+    const byId = new Map(allProducts.map((p) => [p.id, p]));
+
+    const picked = [];
+    const seen = new Set();
+    const add = (product) => {
+      if (!product || seen.has(product.id)) return;
+      seen.add(product.id);
+      picked.push(product);
+    };
+
+    // 1) Ventas recientes, agrupadas por unidades vendidas y mezcladas dentro de
+    // cada grupo para que el desempate también rote con la ventana horaria.
+    const sales = (await topSellingIds()).filter((s) => byId.has(s.id));
+    const groups = new Map();
+    for (const s of sales) {
+      if (!groups.has(s.units)) groups.set(s.units, []);
+      groups.get(s.units).push(byId.get(s.id));
+    }
+    const unitCounts = [...groups.keys()].sort((a, b) => b - a);
+    for (const units of unitCounts) {
+      for (const product of seededShuffle(groups.get(units), seed)) add(product);
+    }
+
+    // 2) Curaduría manual del admin, en su orden.
+    if (picked.length < lim) {
+      const curated = allProducts
+        .filter((p) => p.bestsellerOrder != null)
+        .sort((a, b) => a.bestsellerOrder - b.bestsellerOrder);
+      for (const product of curated) add(product);
+    }
+
+    // 3) Novedades (ya vienen created_at DESC desde queryPublic).
+    if (picked.length < lim) {
+      for (const product of allProducts) add(product);
+    }
+
+    return picked.slice(0, lim);
+  });
+}
+
+// Franja "También te puede gustar": activos con stock, excluyendo lo que ya está
+// en el carrito (`refs`), priorizando la(s) categoría(s) de esos productos (o
+// `categoria` si no hay refs) y completando con el resto, todo mezclado por la
+// semilla de la hora. Nunca lanza error — sin candidatos, devuelve [] y el front
+// simplemente no pinta la franja.
+export async function sugeridos({ refs = [], categoria, limit } = {}) {
+  const lim = clampShowcaseLimit(limit, 6);
+  const excluded = new Set(refs.map((r) => Number(r)).filter(Number.isInteger));
+  const key = `sugeridos:${[...excluded].sort().join(',')}:${categoria || ''}:${lim}`;
+
+  return withCache(key, async (seed) => {
+    const everything = await queryPublic('todo');
+
+    const preferredCats = new Set(
+      excluded.size > 0
+        ? everything.filter((p) => excluded.has(p.id)).map((p) => p.cat)
+        : categoria && categoria !== 'todo'
+          ? [categoria]
+          : []
+    );
+
+    const candidates = everything.filter((p) => hasStock(p) && !excluded.has(p.id));
+    const preferred = candidates.filter((p) => preferredCats.has(p.cat));
+    const rest = candidates.filter((p) => !preferredCats.has(p.cat));
+
+    const ordered = [...seededShuffle(preferred, seed), ...seededShuffle(rest, seed)];
+    return ordered.slice(0, lim);
+  });
 }
