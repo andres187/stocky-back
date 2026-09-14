@@ -358,6 +358,68 @@ async function main() {
     if (err.code !== 'ER_FK_DUP_NAME' && err.errno !== 1826) throw err;
   }
 
+  // Comentarios/reseñas que un cliente deja sobre un producto. `order_id` es
+  // nullable y sin FK "dura" a propósito: identifica la compra verificada que
+  // originó el comentario (para mostrarlo como "compra verificada"), pero un
+  // comentario nunca debe desaparecer ni bloquearse por lo que le pase al pedido.
+  await conn.query(`
+    CREATE TABLE IF NOT EXISTS product_reviews (
+      id INT PRIMARY KEY AUTO_INCREMENT,
+      customer_id INT NOT NULL,
+      product_id INT NOT NULL,
+      order_id INT NULL,
+      rating TINYINT NOT NULL,
+      body VARCHAR(1000) NULL,
+      status ENUM('published', 'hidden') NOT NULL DEFAULT 'published',
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+    ) ENGINE=InnoDB CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+  `);
+
+  try {
+    await conn.query(
+      'ALTER TABLE product_reviews ADD CONSTRAINT fk_product_reviews_customer FOREIGN KEY (customer_id) REFERENCES customers(id) ON DELETE CASCADE ON UPDATE RESTRICT'
+    );
+  } catch (err) {
+    if (err.code !== 'ER_FK_DUP_NAME' && err.errno !== 1826) throw err;
+  }
+
+  try {
+    await conn.query(
+      'ALTER TABLE product_reviews ADD CONSTRAINT fk_product_reviews_product FOREIGN KEY (product_id) REFERENCES products(id) ON DELETE RESTRICT ON UPDATE RESTRICT'
+    );
+  } catch (err) {
+    if (err.code !== 'ER_FK_DUP_NAME' && err.errno !== 1826) throw err;
+  }
+
+  try {
+    await conn.query(
+      'ALTER TABLE product_reviews ADD CONSTRAINT fk_product_reviews_order FOREIGN KEY (order_id) REFERENCES orders(id) ON DELETE SET NULL ON UPDATE RESTRICT'
+    );
+  } catch (err) {
+    if (err.code !== 'ER_FK_DUP_NAME' && err.errno !== 1826) throw err;
+  }
+
+  // Un comentario por cliente y producto — para editarlo se usa PATCH, no un
+  // segundo POST.
+  try {
+    await conn.query('ALTER TABLE product_reviews ADD UNIQUE KEY uq_product_reviews_customer_product (customer_id, product_id)');
+  } catch (err) {
+    if (err.code !== 'ER_DUP_KEYNAME') throw err;
+  }
+
+  try {
+    await conn.query('ALTER TABLE product_reviews ADD INDEX idx_product_reviews_product (product_id)');
+  } catch (err) {
+    if (err.code !== 'ER_DUP_KEYNAME') throw err;
+  }
+
+  try {
+    await conn.query('ALTER TABLE product_reviews ADD INDEX idx_product_reviews_customer (customer_id)');
+  } catch (err) {
+    if (err.code !== 'ER_DUP_KEYNAME') throw err;
+  }
+
   console.log('Migración completa: base de datos y tablas listas.');
   await conn.end();
 }

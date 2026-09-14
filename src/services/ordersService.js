@@ -314,13 +314,29 @@ export async function applyPaymentUpdate(wompiTransactionId, wompiStatus, rawTra
   return { orderId: row.order_id, status: newOrderStatus };
 }
 
+// Antes hacía 1 + 3N queries (una por pedido, vía getForCustomer). Con muchos
+// pedidos por cliente eso escala mal, así que aquí se trae todo en 4 queries
+// totales y se agrupa en JS — la forma de la respuesta no cambia.
 export async function listForCustomer(customerId) {
   const [orders] = await pool.query('SELECT * FROM orders WHERE customer_id = ? ORDER BY created_at DESC', [customerId]);
-  const results = [];
-  for (const order of orders) {
-    results.push(await getForCustomer(customerId, order.id));
+  if (orders.length === 0) return [];
+
+  const orderIds = orders.map((o) => o.id);
+  const [items] = await pool.query('SELECT * FROM order_items WHERE order_id IN (?)', [orderIds]);
+  const [shipments] = await pool.query('SELECT * FROM shipments WHERE order_id IN (?)', [orderIds]);
+  const [payments] = await pool.query('SELECT * FROM payment_transactions WHERE order_id IN (?)', [orderIds]);
+
+  const itemsByOrder = new Map();
+  for (const it of items) {
+    if (!itemsByOrder.has(it.order_id)) itemsByOrder.set(it.order_id, []);
+    itemsByOrder.get(it.order_id).push(it);
   }
-  return results;
+  const shipmentByOrder = new Map(shipments.map((s) => [s.order_id, s]));
+  const paymentByOrder = new Map(payments.map((p) => [p.order_id, p]));
+
+  return orders.map((order) =>
+    serialize(order, itemsByOrder.get(order.id) || [], shipmentByOrder.get(order.id), paymentByOrder.get(order.id))
+  );
 }
 
 export async function getForCustomer(customerId, orderId) {

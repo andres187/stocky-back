@@ -61,7 +61,20 @@ Flow (`src/services/ordersService.js` + `src/services/paymentService.js`):
 7. A real double-submit guard: the client sends its own `idempotencyKey` (generated once, e.g. when the payment form mounts); `orders` has `UNIQUE (customer_id, idempotency_key)`, and a repeated request with the same key returns the existing order without charging Wompi again — the server-generated `reference` alone does *not* protect against this, since a fresh HTTP retry would otherwise get a fresh reference.
 8. After a synchronous `paid` result, `emailService.sendOrderConfirmation(...)` (Resend) runs best-effort, and **only when Wompi approved** — a deliberate deviation from the reference, which emails "confirmed" regardless of status; doing that here would mislead a customer whose card was actually declined. A send failure is logged in its own `try/catch` and never changes the 201 response or rolls back the already-persisted order. For async methods, the same email is sent instead by the webhook handler once it actually resolves to `paid` (see point 6).
 
-`GET /api/orders` / `GET /api/orders/:id` return only the authenticated customer's own orders (404 on any order id that isn't theirs). `PATCH /api/admin/shipments/:id` (`requireAuth`, admin-only — not `requireCustomerAuth`) updates a shipment's `status` (`pending`/`shipped`/`delivered`) and optional `trackingNumber`; there's no customer-facing way to change a shipment's state.
+`GET /api/payments/pse/banks` (public) — `paymentService.listPseBanks()` proxies Wompi's `GET /pse/financial_institutions` (using the public key, not the private one, since it's informational) and caches the result in memory for 1h; feeds the bank picker on a PSE checkout form.
+
+`GET /api/orders` / `GET /api/orders/:id` return only the authenticated customer's own orders (404 on any order id that isn't theirs) — `listForCustomer` fetches items/shipments/payments in 3 batched `IN (...)` queries rather than per-order, so it's O(1) roundtrips regardless of how many orders a customer has. `PATCH /api/admin/shipments/:id` (`requireAuth`, admin-only — not `requireCustomerAuth`) updates a shipment's `status` (`pending`/`shipped`/`delivered`) and optional `trackingNumber`; there's no customer-facing way to change a shipment's state.
+
+### Product reviews (comments left by customers)
+
+`src/services/reviewsService.js` + `src/routes/reviews.js`, mounted at `/api/reviews`, plus one route on `productsRouter`:
+
+- `GET /api/reviews/me` (`requireCustomerAuth`) — every review the authenticated customer has left, newest first, joined with the product's current name/image.
+- `POST /api/reviews` (`requireCustomerAuth`, rate-limited 30/15min) — `{ productId, rating (1-5), body? }`. One review per `(customer, product)` — a second `POST` for the same product is a 409; use `PATCH` to edit. `product_reviews.order_id` is resolved server-side to the customer's most recent **paid** order containing that product (nullable — a review isn't required to come from a purchase made in this store).
+- `PATCH /api/reviews/:id`, `DELETE /api/reviews/:id` (`requireCustomerAuth`) — 404 if the review isn't the caller's, same ownership pattern as orders.
+- `GET /api/products/:id/reviews` — public, `status = 'published'` only.
+
+`product_reviews` has no moderation UI yet (`status` exists so hiding a review later is additive, no schema change) and no admin listing — both are natural follow-ups, not implemented here.
 
 ### Service layer
 
@@ -87,6 +100,7 @@ Eleven tables (created by `migrate.js`, no ORM/migration framework — raw SQL, 
 - `order_items(id, order_id FK→orders CASCADE, product_id FK→products RESTRICT, product_name, color, size, quantity, unit_price)` — `product_name`/`unit_price` are snapshots at purchase time, same denormalization reasoning as `products.colors`/`products.sizes` below.
 - `shipments(id, order_id UNIQUE FK→orders CASCADE, status ENUM('pending','shipped','delivered'), tracking_number, created_at, updated_at)` — one row per paid order (Stocky has no multi-store/service split, unlike the reference implementation this was adapted from). No status-mutation endpoint exists yet; a future admin `PATCH` would be additive, no schema change.
 - `payment_transactions(id, order_id UNIQUE FK→orders RESTRICT, wompi_transaction_id UNIQUE, status, amount_in_cents, currency, payment_method_type, raw_response JSON, created_at)` — `status` is a raw `VARCHAR` mirroring Wompi's own status strings (not an `ENUM`), so a future webhook can update it without a migration.
+- `product_reviews(id, customer_id FK→customers CASCADE, product_id FK→products RESTRICT, order_id NULL FK→orders SET NULL, rating TINYINT 1-5, body VARCHAR(1000) NULL, status ENUM('published','hidden') DEFAULT 'published', created_at, updated_at)`, `UNIQUE (customer_id, product_id)` — see Product reviews above.
 
 `products.colors`/`products.sizes` (`[{ name, hex }]` / `[string]`) are each product's own snapshot of which options it offers, and `variant_stock` (`[{ color, size, stock }]`) is optional per-combination inventory — none of these three JSON columns have a FK back to `colors`/`sizes`; that's a deliberate denormalization (a product's color/size list is captured at edit time, not live-joined), not an oversight. `bestseller_order` (nullable int, 1-3) drives which products show in the storefront hero carousel. `services/productsService.js`'s `serialize()` is the single place that maps DB snake_case rows (`category`, `old_price`, `image_url`, `bestseller_order`, `variant_stock`) to the camelCase API shape (`cat`, `oldPrice`, `img`, `bestsellerOrder`, `variantStock`) the frontend expects — keep both in sync when changing either side.
 
