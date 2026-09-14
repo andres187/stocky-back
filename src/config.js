@@ -75,4 +75,10 @@ export const config = {
     apiKey: process.env.RESEND_API_KEY || '',
     fromEmail: process.env.RESEND_FROM_EMAIL || '',
   },
+  // Ventana de rotación de la vitrina (ver rotationService.js). Default 1 hora;
+  // se puede bajar en desarrollo (p. ej. ROTATION_WINDOW_MS=5000) para probar el
+  // cambio de orden sin esperar una hora real.
+  rotation: {
+    windowMs: Number(process.env.ROTATION_WINDOW_MS || 60 * 60 * 1000),
+  },
 };
