@@ -42,6 +42,23 @@ async function main() {
     ) ENGINE=InnoDB;
   `);
 
+  // Dueños de la ropa (consignación): registran su cuenta desde la tienda y quedan
+  // 'pending' hasta que un admin las aprueba. commission_rate es el % que se queda
+  // la tienda sobre cada venta suya.
+  await conn.query(`
+    CREATE TABLE IF NOT EXISTS sellers (
+      id INT PRIMARY KEY AUTO_INCREMENT,
+      email VARCHAR(190) NOT NULL UNIQUE,
+      password_hash VARCHAR(255) NOT NULL,
+      full_name VARCHAR(160) NOT NULL,
+      phone VARCHAR(30) NULL,
+      commission_rate DECIMAL(5,2) NOT NULL DEFAULT 0,
+      status ENUM('pending', 'approved', 'rejected') NOT NULL DEFAULT 'pending',
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+    ) ENGINE=InnoDB CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+  `);
+
   await conn.query(`
     CREATE TABLE IF NOT EXISTS products (
       id INT PRIMARY KEY AUTO_INCREMENT,
@@ -66,6 +83,8 @@ async function main() {
   for (const ddl of [
     'ALTER TABLE products ADD COLUMN bestseller_order INT NULL',
     'ALTER TABLE products ADD COLUMN variant_stock JSON NULL',
+    // NULL = producto de la tienda (el catálogo que existía antes de los dueños).
+    'ALTER TABLE products ADD COLUMN seller_id INT NULL',
   ]) {
     try {
       await conn.query(ddl);
@@ -120,6 +139,20 @@ async function main() {
     if (err.code !== 'ER_FK_DUP_NAME' && err.errno !== 1826) throw err;
   }
 
+  try {
+    await conn.query(
+      'ALTER TABLE products ADD CONSTRAINT fk_products_seller FOREIGN KEY (seller_id) REFERENCES sellers(id) ON DELETE RESTRICT ON UPDATE RESTRICT'
+    );
+  } catch (err) {
+    if (err.code !== 'ER_FK_DUP_NAME' && err.errno !== 1826) throw err;
+  }
+
+  try {
+    await conn.query('ALTER TABLE products ADD INDEX idx_products_seller (seller_id)');
+  } catch (err) {
+    if (err.code !== 'ER_DUP_KEYNAME') throw err;
+  }
+
   // Índice para el filtro `WHERE active = 1` que corre en cada carga de la tienda.
   try {
     await conn.query('ALTER TABLE products ADD INDEX idx_products_active (active)');
@@ -131,10 +164,51 @@ async function main() {
     CREATE TABLE IF NOT EXISTS customers (
       id INT PRIMARY KEY AUTO_INCREMENT,
       email VARCHAR(190) NOT NULL UNIQUE,
-      password_hash VARCHAR(255) NOT NULL,
+      password_hash VARCHAR(255) NULL,
       full_name VARCHAR(160) NOT NULL,
+      last_name VARCHAR(80) NULL,
+      region_code VARCHAR(6) NULL,
       phone VARCHAR(30) NULL,
       created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    ) ENGINE=InnoDB CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+  `);
+
+  // Un cliente que entra con código OTP nunca tiene contraseña, así que password_hash
+  // deja de ser obligatorio. El login por correo+contraseña sigue exigiéndolo en su
+  // propio camino (customerAuthService.login rechaza al cliente sin hash).
+  await conn.query('ALTER TABLE customers MODIFY password_hash VARCHAR(255) NULL');
+
+  for (const column of ['last_name VARCHAR(80) NULL', 'region_code VARCHAR(6) NULL']) {
+    try {
+      await conn.query(`ALTER TABLE customers ADD COLUMN ${column}`);
+    } catch (err) {
+      if (err.code !== 'ER_DUP_FIELDNAME') throw err;
+    }
+  }
+
+  // El celular es un identificador de login, así que tiene que ser único — pero solo
+  // junto al prefijo de país: +57 300... y +52 300... son personas distintas. MySQL
+  // permite repetir NULL en un índice único, así que los clientes viejos sin celular
+  // (los que se registraron con correo+contraseña) no chocan entre sí.
+  try {
+    await conn.query('ALTER TABLE customers ADD UNIQUE KEY uq_customers_phone (region_code, phone)');
+  } catch (err) {
+    if (err.code !== 'ER_DUP_KEYNAME') throw err;
+  }
+
+  // OTP por correo: el código se genera y valida aquí (equivalente a la tabla
+  // email_otps de etniapp-core). El OTP por SMS no necesita tabla porque el código
+  // lo guarda y lo valida Twilio Verify.
+  await conn.query(`
+    CREATE TABLE IF NOT EXISTS customer_email_otps (
+      id INT PRIMARY KEY AUTO_INCREMENT,
+      email VARCHAR(190) NOT NULL,
+      code VARCHAR(6) NOT NULL,
+      expires_at DATETIME NOT NULL,
+      used TINYINT(1) NOT NULL DEFAULT 0,
+      attempts INT NOT NULL DEFAULT 0,
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      INDEX idx_customer_email_otps_email (email)
     ) ENGINE=InnoDB CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
   `);
 
@@ -188,9 +262,32 @@ async function main() {
       color VARCHAR(60) NOT NULL,
       size VARCHAR(20) NOT NULL,
       quantity INT NOT NULL,
-      unit_price INT NOT NULL
+      unit_price INT NOT NULL,
+      seller_id INT NULL,
+      commission_rate DECIMAL(5,2) NULL
     ) ENGINE=InnoDB CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
   `);
+
+  // Snapshots al momento de la compra, misma razón que product_name/unit_price: si
+  // mañana cambia la comisión del dueño o el producto pasa a otro dueño, la
+  // liquidación histórica no se mueve. A propósito sin FK a sellers — el historial
+  // nunca debe bloquear el borrado de un dueño.
+  for (const ddl of [
+    'ALTER TABLE order_items ADD COLUMN seller_id INT NULL',
+    'ALTER TABLE order_items ADD COLUMN commission_rate DECIMAL(5,2) NULL',
+  ]) {
+    try {
+      await conn.query(ddl);
+    } catch (err) {
+      if (err.code !== 'ER_DUP_FIELDNAME') throw err;
+    }
+  }
+
+  try {
+    await conn.query('ALTER TABLE order_items ADD INDEX idx_order_items_seller (seller_id)');
+  } catch (err) {
+    if (err.code !== 'ER_DUP_KEYNAME') throw err;
+  }
 
   try {
     await conn.query(
