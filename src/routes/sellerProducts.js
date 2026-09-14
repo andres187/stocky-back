@@ -2,6 +2,7 @@ import { Router } from 'express';
 import { requireSellerAuth } from '../middleware/sellerAuth.js';
 import * as productsService from '../services/productsService.js';
 import * as sellerSalesService from '../services/sellerSalesService.js';
+import * as reportsService from '../services/reportsService.js';
 
 // Portal del dueño: todo va filtrado por req.seller.sub, nunca por un id del body.
 export const sellerRouter = Router();
@@ -31,4 +32,34 @@ sellerRouter.delete('/products/:id', async (req, res) => {
 
 sellerRouter.get('/sales', async (req, res) => {
   res.json(await sellerSalesService.listForSeller(req.seller.sub, { from: req.query.from, to: req.query.to }));
+});
+
+// Reportes del propio dueño: sellerId siempre sale de la sesión (req.seller.sub),
+// nunca del query — un dueño no puede pedir los números de otro.
+function range(req) {
+  return { from: req.query.from, to: req.query.to };
+}
+
+sellerRouter.get('/reports/summary', async (req, res) => {
+  res.json(await reportsService.summary(range(req), { sellerId: req.seller.sub }));
+});
+
+sellerRouter.get('/reports/timeseries', async (req, res) => {
+  res.json(
+    await reportsService.timeseries(range(req), { sellerId: req.seller.sub, groupBy: req.query.groupBy })
+  );
+});
+
+sellerRouter.get('/reports/top-products', async (req, res) => {
+  res.json(
+    await reportsService.topProducts(range(req), { sellerId: req.seller.sub, limit: req.query.limit })
+  );
+});
+
+sellerRouter.get('/reports/by-category', async (req, res) => {
+  res.json(await reportsService.byCategory(range(req), { sellerId: req.seller.sub }));
+});
+
+sellerRouter.get('/reports/inventory', async (req, res) => {
+  res.json(await reportsService.inventory(range(req), { sellerId: req.seller.sub }));
 });

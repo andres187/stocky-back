@@ -11,6 +11,7 @@ import { sellerAuthRouter } from './routes/sellerAuth.js';
 import { sellerRouter } from './routes/sellerProducts.js';
 import { sellersRouter } from './routes/sellers.js';
 import { adminSellerSalesRouter } from './routes/adminSellerSales.js';
+import { adminReportsRouter } from './routes/adminReports.js';
 import { productsRouter } from './routes/products.js';
 import { categoriesRouter } from './routes/categories.js';
 import { colorsRouter } from './routes/colors.js';
@@ -39,6 +40,7 @@ app.use('/api/sizes', sizesRouter);
 app.use('/api/orders', ordersRouter);
 app.use('/api/admin/shipments', adminShipmentsRouter);
 app.use('/api/admin/seller-sales', adminSellerSalesRouter);
+app.use('/api/admin/reports', adminReportsRouter);
 app.use('/api/webhooks/wompi', wompiWebhookRouter);
 
 app.use((req, res) => res.status(404).json({ error: 'Ruta no encontrada.' }));
