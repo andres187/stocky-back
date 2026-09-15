@@ -133,6 +133,81 @@ async function seedTestCustomer() {
   console.log(`Cliente de prueba "${email}" creado (contraseña: prueba1234).`);
 }
 
+// Sin esto no hay forma de ver la línea de seguimiento del envío en la app/web
+// sin pasar por un checkout real contra Wompi. Crea, para el cliente de prueba,
+// un pedido ya pagado con dos artículos y un historial de envío de 3 pasos con
+// fechas escalonadas (recibido → en preparación → enviado), para poder ver los
+// pasos ya cumplidos y los pendientes de una sola vez.
+async function seedSampleShipment() {
+  const email = 'cliente.prueba@stocky.test';
+  const [customers] = await pool.query('SELECT id FROM customers WHERE email = ?', [email]);
+  const customerId = customers[0]?.id;
+  if (!customerId) {
+    console.log('No existe el cliente de prueba, se omite el pedido de ejemplo.');
+    return;
+  }
+
+  const [existingOrders] = await pool.query('SELECT id FROM orders WHERE customer_id = ?', [customerId]);
+  if (existingOrders.length > 0) {
+    console.log('El cliente de prueba ya tiene pedidos, no se crea uno de ejemplo.');
+    return;
+  }
+
+  const [products] = await pool.query('SELECT id, name, price, colors, sizes FROM products LIMIT 2');
+  if (products.length < 2) {
+    console.log('No hay suficientes productos sembrados para armar el pedido de ejemplo.');
+    return;
+  }
+
+  const conn = await pool.getConnection();
+  try {
+    await conn.beginTransaction();
+
+    const subtotal = products.reduce((sum, p) => sum + p.price, 0);
+    const shippingCost = 15000;
+    const total = subtotal + shippingCost;
+
+    const [orderResult] = await conn.query(
+      `INSERT INTO orders (customer_id, reference, status, subtotal, shipping_cost, total, shipping_name, shipping_email, shipping_phone, shipping_address, shipping_city)
+       VALUES (?, 'STK-DEMO01', 'paid', ?, ?, ?, 'Cliente de Prueba', ?, '3001234567', 'Calle 10 # 20-30', 'Bogotá')`,
+      [customerId, subtotal, shippingCost, total, email]
+    );
+    const orderId = orderResult.insertId;
+
+    for (const p of products) {
+      const colors = typeof p.colors === 'string' ? JSON.parse(p.colors) : p.colors;
+      const sizes = typeof p.sizes === 'string' ? JSON.parse(p.sizes) : p.sizes;
+      await conn.query(
+        'INSERT INTO order_items (order_id, product_id, product_name, color, size, quantity, unit_price) VALUES (?, ?, ?, ?, ?, 1, ?)',
+        [orderId, p.id, p.name, colors[0]?.name || 'Único', sizes[0] || 'M', p.price]
+      );
+    }
+
+    const [shipmentResult] = await conn.query(
+      "INSERT INTO shipments (order_id, status, carrier) VALUES (?, 'shipped', 'Servientrega')",
+      [orderId]
+    );
+    const shipmentId = shipmentResult.insertId;
+
+    // Fechas escalonadas: pagado hace 3 días, preparado hace 2, enviado ayer —
+    // así la línea de seguimiento muestra pasos ya cumplidos y pasos pendientes.
+    for (const [status, daysAgo] of [['pending', 3], ['preparing', 2], ['shipped', 1]]) {
+      await conn.query(
+        "INSERT INTO shipment_status_history (shipment_id, status, actor_type, created_at) VALUES (?, ?, 'system', DATE_SUB(NOW(), INTERVAL ? DAY))",
+        [shipmentId, status, daysAgo]
+      );
+    }
+
+    await conn.commit();
+    console.log('Pedido de ejemplo "STK-DEMO01" creado para el cliente de prueba (envío en estado "shipped").');
+  } catch (err) {
+    await conn.rollback();
+    throw err;
+  } finally {
+    conn.release();
+  }
+}
+
 async function main() {
   await seedAdmin();
   await seedCategories();
@@ -140,6 +215,7 @@ async function main() {
   await seedSizes();
   await seedProducts();
   await seedTestCustomer();
+  await seedSampleShipment();
   await pool.end();
 }
 

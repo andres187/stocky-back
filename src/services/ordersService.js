@@ -3,6 +3,7 @@ import { pool } from '../db/pool.js';
 import { HttpError } from './errors.js';
 import * as paymentService from './paymentService.js';
 import * as emailService from './emailService.js';
+import * as shipmentsService from './shipmentsService.js';
 
 // Réplica server-side de web/src/lib/shipping.js — no se importa entre los dos
 // proyectos (son deployables separados), así que ambas copias deben mantenerse
@@ -17,7 +18,7 @@ function parseVariantStock(row) {
   return row.variant_stock ? (typeof row.variant_stock === 'string' ? JSON.parse(row.variant_stock) : row.variant_stock) : [];
 }
 
-function serialize(orderRow, items, shipmentRow, paymentRow) {
+function serialize(orderRow, items, shipmentRow, paymentRow, shipmentHistoryRows) {
   return {
     id: orderRow.id,
     reference: orderRow.reference,
@@ -41,7 +42,9 @@ function serialize(orderRow, items, shipmentRow, paymentRow) {
       quantity: it.quantity,
       unitPrice: it.unit_price,
     })),
-    shipment: shipmentRow ? { status: shipmentRow.status, trackingNumber: shipmentRow.tracking_number } : null,
+    // status/trackingNumber se mantienen con el mismo nombre que antes de
+    // agregar la línea de seguimiento, para no romper a nadie que ya los leía.
+    shipment: shipmentsService.serializeShipment(shipmentRow, shipmentHistoryRows),
     payment: paymentRow ? { wompiTransactionId: paymentRow.wompi_transaction_id, status: paymentRow.status, paymentMethodType: paymentRow.payment_method_type } : null,
     createdAt: orderRow.created_at,
   };
@@ -194,7 +197,8 @@ export async function checkout(customerId, customerContact, lines, amountInCents
       await conn.query('UPDATE products SET variant_stock = ? WHERE id = ?', [JSON.stringify(updated), line.productId]);
     }
 
-    await conn.query('INSERT INTO shipments (order_id, status) VALUES (?, \'pending\')', [orderId]);
+    const [shipmentResult] = await conn.query('INSERT INTO shipments (order_id, status) VALUES (?, \'pending\')', [orderId]);
+    await shipmentsService.appendInitialHistory(conn, shipmentResult.insertId);
 
     await conn.query(
       'INSERT INTO payment_transactions (order_id, wompi_transaction_id, status, amount_in_cents, currency, payment_method_type, raw_response) VALUES (?, ?, ?, ?, ?, ?, ?)',
@@ -315,8 +319,9 @@ export async function applyPaymentUpdate(wompiTransactionId, wompiStatus, rawTra
 }
 
 // Antes hacía 1 + 3N queries (una por pedido, vía getForCustomer). Con muchos
-// pedidos por cliente eso escala mal, así que aquí se trae todo en 4 queries
-// totales y se agrupa en JS — la forma de la respuesta no cambia.
+// pedidos por cliente eso escala mal, así que aquí se trae todo en 5 queries
+// totales (la quinta es el historial de la línea de seguimiento) y se agrupa
+// en JS — la forma de la respuesta no cambia salvo por el nuevo shipment.history.
 export async function listForCustomer(customerId) {
   const [orders] = await pool.query('SELECT * FROM orders WHERE customer_id = ? ORDER BY created_at DESC', [customerId]);
   if (orders.length === 0) return [];
@@ -326,17 +331,29 @@ export async function listForCustomer(customerId) {
   const [shipments] = await pool.query('SELECT * FROM shipments WHERE order_id IN (?)', [orderIds]);
   const [payments] = await pool.query('SELECT * FROM payment_transactions WHERE order_id IN (?)', [orderIds]);
 
+  const shipmentIds = shipments.map((s) => s.id);
+  const [history] =
+    shipmentIds.length > 0
+      ? await pool.query('SELECT * FROM shipment_status_history WHERE shipment_id IN (?) ORDER BY created_at ASC', [shipmentIds])
+      : [[]];
+
   const itemsByOrder = new Map();
   for (const it of items) {
     if (!itemsByOrder.has(it.order_id)) itemsByOrder.set(it.order_id, []);
     itemsByOrder.get(it.order_id).push(it);
   }
   const shipmentByOrder = new Map(shipments.map((s) => [s.order_id, s]));
+  const historyByShipment = new Map();
+  for (const h of history) {
+    if (!historyByShipment.has(h.shipment_id)) historyByShipment.set(h.shipment_id, []);
+    historyByShipment.get(h.shipment_id).push(h);
+  }
   const paymentByOrder = new Map(payments.map((p) => [p.order_id, p]));
 
-  return orders.map((order) =>
-    serialize(order, itemsByOrder.get(order.id) || [], shipmentByOrder.get(order.id), paymentByOrder.get(order.id))
-  );
+  return orders.map((order) => {
+    const shipment = shipmentByOrder.get(order.id);
+    return serialize(order, itemsByOrder.get(order.id) || [], shipment, paymentByOrder.get(order.id), shipment && historyByShipment.get(shipment.id));
+  });
 }
 
 export async function getForCustomer(customerId, orderId) {
@@ -347,6 +364,10 @@ export async function getForCustomer(customerId, orderId) {
   const [items] = await pool.query('SELECT * FROM order_items WHERE order_id = ?', [order.id]);
   const [shipments] = await pool.query('SELECT * FROM shipments WHERE order_id = ?', [order.id]);
   const [payments] = await pool.query('SELECT * FROM payment_transactions WHERE order_id = ?', [order.id]);
+  const shipment = shipments[0];
+  const [history] = shipment
+    ? await pool.query('SELECT * FROM shipment_status_history WHERE shipment_id = ? ORDER BY created_at ASC', [shipment.id])
+    : [[]];
 
-  return serialize(order, items, shipments[0], payments[0]);
+  return serialize(order, items, shipment, payments[0], history);
 }
