@@ -8,7 +8,8 @@
     "dev": "nodemon src/server.js",
     "start": "node src/server.js",
     "migrate": "node src/scripts/migrate.js",
-    "seed": "node src/scripts/seed.js"
+    "seed": "node src/scripts/seed.js",
+    "jobs:auto-confirm": "node src/scripts/autoConfirmDeliveries.js"
   },
   "license": "ISC",
   "dependencies": {

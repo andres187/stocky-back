@@ -3,6 +3,7 @@ import { requireSellerAuth } from '../middleware/sellerAuth.js';
 import * as productsService from '../services/productsService.js';
 import * as sellerSalesService from '../services/sellerSalesService.js';
 import * as reportsService from '../services/reportsService.js';
+import * as payoutsService from '../services/payoutsService.js';
 
 // Portal del dueño: todo va filtrado por req.seller.sub, nunca por un id del body.
 export const sellerRouter = Router();
@@ -32,6 +33,12 @@ sellerRouter.delete('/products/:id', async (req, res) => {
 
 sellerRouter.get('/sales', async (req, res) => {
   res.json(await sellerSalesService.listForSeller(req.seller.sub, { from: req.query.from, to: req.query.to }));
+});
+
+// Histórico de pagos recibidos, para que el dueño pueda cuadrar contra lo que
+// el reporte de ventas le muestra como "ya pagado".
+sellerRouter.get('/payouts', async (req, res) => {
+  res.json(await payoutsService.listForSeller(req.seller.sub));
 });
 
 // Reportes del propio dueño: sellerId siempre sale de la sesión (req.seller.sub),

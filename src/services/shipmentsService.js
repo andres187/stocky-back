@@ -2,19 +2,26 @@ import { pool } from '../db/pool.js';
 import { HttpError } from './errors.js';
 
 // Flujo normal del envío, en orden. 'pending' significa "pagado, aún sin
-// preparar" (así lo crea ordersService.checkout). cancelled/returned son
-// estados terminales de excepción, no un paso más de la línea de tiempo.
-export const STATUS_FLOW = ['pending', 'preparing', 'shipped', 'out_for_delivery', 'delivered'];
+// preparar" (así lo crea ordersService.checkout). 'received' es la confirmación
+// del comprador y es lo que arranca la retención de pago al vendedor.
+// cancelled/returned son estados terminales de excepción, no un paso más.
+export const STATUS_FLOW = ['pending', 'preparing', 'shipped', 'out_for_delivery', 'delivered', 'received'];
 export const TERMINAL_STATUSES = ['cancelled', 'returned'];
 export const ALL_STATUSES = [...STATUS_FLOW, ...TERMINAL_STATUSES];
 
+// Quién puede confirmar que el pedido llegó. El vendedor queda fuera a
+// propósito: "entregado" ya lo pone él, que es la parte interesada, y dejarlo
+// también cerrar el "recibido" haría que pudiera liberar su propio pago.
+const CAN_CONFIRM_RECEIPT = ['customer', 'system', 'admin'];
+
 // Solo se puede avanzar dentro del flujo (no retroceder), cancelar antes de
-// que llegue, o marcar devuelto una vez que salió a reparto o ya se entregó.
-// Desde un estado terminal no se sale.
-function canTransition(from, to) {
+// que llegue, o marcar devuelto una vez que salió a reparto / se entregó /
+// el cliente lo recibió. Desde un estado terminal no se sale.
+export function canTransition(from, to, actorType) {
   if (TERMINAL_STATUSES.includes(from)) return false;
-  if (to === 'cancelled') return from !== 'delivered';
-  if (to === 'returned') return from === 'out_for_delivery' || from === 'delivered';
+  if (to === 'cancelled') return from !== 'delivered' && from !== 'received';
+  if (to === 'returned') return from === 'out_for_delivery' || from === 'delivered' || from === 'received';
+  if (to === 'received' && !CAN_CONFIRM_RECEIPT.includes(actorType)) return false;
   const fromIdx = STATUS_FLOW.indexOf(from);
   const toIdx = STATUS_FLOW.indexOf(to);
   return fromIdx !== -1 && toIdx !== -1 && toIdx === fromIdx + 1;
@@ -32,6 +39,9 @@ export function serializeShipment(row, historyRows = []) {
     status: row.status,
     trackingNumber: row.tracking_number,
     carrier: row.carrier,
+    deliveredAt: row.delivered_at ?? null,
+    receivedAt: row.received_at ?? null,
+    receivedSource: row.received_source ?? null,
     updatedAt: row.updated_at,
     history: serializeHistory(historyRows),
   };
@@ -59,13 +69,16 @@ async function getShipmentWithHistory(shipmentId, queryable = pool) {
   return { shipment, history };
 }
 
-// actor = { type: 'admin' | 'seller', id }. Todo en una transacción: se bloquea
-// la fila del envío, se valida la transición contra su estado actual y solo
-// entonces se actualiza + se agrega el paso al historial.
-export async function updateStatus(shipmentId, { status, trackingNumber, carrier, note }, actor) {
+// actor = { type: 'admin' | 'seller' | 'customer' | 'system', id }. Todo en una
+// transacción: se bloquea la fila del envío, se valida la transición contra su
+// estado actual y quién la pide, y solo entonces se actualiza + se agrega el
+// paso al historial.
+export async function updateStatus(shipmentId, { status, trackingNumber, carrier, note, receivedSource }, actor) {
   if (!ALL_STATUSES.includes(status)) {
     throw new HttpError(400, { errors: [`El estado debe ser uno de: ${ALL_STATUSES.join(', ')}.`] });
   }
+
+  const actorType = actor?.type || 'system';
 
   const conn = await pool.getConnection();
   try {
@@ -75,17 +88,30 @@ export async function updateStatus(shipmentId, { status, trackingNumber, carrier
     const current = rows[0];
     if (!current) throw new HttpError(404, 'Envío no encontrado.');
 
-    if (!canTransition(current.status, status)) {
+    if (!canTransition(current.status, status, actorType)) {
       throw new HttpError(409, { errors: [`No se puede pasar de "${current.status}" a "${status}".`] });
     }
 
+    // delivered_at/received_at quedan desnormalizados aquí porque la
+    // liquidación los consulta en cada reporte (ver PAYOUT_STATE_SQL) y no
+    // puede estar re-derivándolos del historial fila por fila.
+    const extraSets = [];
+    const extraParams = [];
+    if (status === 'delivered' && !current.delivered_at) {
+      extraSets.push('delivered_at = NOW()');
+    }
+    if (status === 'received' && !current.received_at) {
+      extraSets.push('received_at = NOW()', 'received_source = ?');
+      extraParams.push(receivedSource || (actorType === 'system' ? 'auto' : actorType));
+    }
+
     await conn.query(
-      'UPDATE shipments SET status = ?, tracking_number = ?, carrier = ? WHERE id = ?',
-      [status, trackingNumber ?? current.tracking_number, carrier ?? current.carrier, shipmentId]
+      `UPDATE shipments SET status = ?, tracking_number = ?, carrier = ?${extraSets.length ? ', ' + extraSets.join(', ') : ''} WHERE id = ?`,
+      [status, trackingNumber ?? current.tracking_number, carrier ?? current.carrier, ...extraParams, shipmentId]
     );
     await conn.query(
       'INSERT INTO shipment_status_history (shipment_id, status, note, actor_type, actor_id) VALUES (?, ?, ?, ?, ?)',
-      [shipmentId, status, note || null, actor?.type || 'system', actor?.id ?? null]
+      [shipmentId, status, note || null, actorType, actor?.id ?? null]
     );
 
     await conn.commit();
