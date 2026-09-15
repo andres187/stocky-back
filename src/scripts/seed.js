@@ -153,53 +153,93 @@ async function seedSampleShipment() {
     return;
   }
 
-  const [products] = await pool.query('SELECT id, name, price, colors, sizes FROM products LIMIT 2');
-  if (products.length < 2) {
-    console.log('No hay suficientes productos sembrados para armar el pedido de ejemplo.');
+  const [products] = await pool.query('SELECT id, name, price, colors, sizes FROM products LIMIT 4');
+  if (products.length < 4) {
+    console.log('No hay suficientes productos sembrados para armar los pedidos de ejemplo.');
     return;
   }
+
+  // Tres pedidos, cada uno en un punto distinto del ciclo de pago al vendedor
+  // (ver reportsService.PAYOUT_STATE_SQL), para poder probar los tres casos
+  // sin tener que mover fechas a mano:
+  //   STK-DEMO01: enviado ayer — 'pending' de cara al pago.
+  //   STK-DEMO02: recibido hace 20 días — ya 'available' para pagarle al vendedor.
+  //   STK-DEMO03: entregado hace 8 días, nunca confirmado — listo para que
+  //               jobs:auto-confirm lo pase a 'received'.
+  const DEMO_ORDERS = [
+    {
+      reference: 'STK-DEMO01',
+      productIndex: 0,
+      shipmentStatus: 'shipped',
+      history: [['pending', 3], ['preparing', 2], ['shipped', 1]],
+    },
+    {
+      reference: 'STK-DEMO02',
+      productIndex: 1,
+      shipmentStatus: 'received',
+      history: [['pending', 25], ['preparing', 24], ['shipped', 23], ['out_for_delivery', 21], ['delivered', 20], ['received', 20]],
+      deliveredDaysAgo: 20,
+      receivedDaysAgo: 20,
+      receivedSource: 'customer',
+    },
+    {
+      reference: 'STK-DEMO03',
+      productIndex: 2,
+      shipmentStatus: 'delivered',
+      history: [['pending', 12], ['preparing', 11], ['shipped', 10], ['out_for_delivery', 9], ['delivered', 8]],
+      deliveredDaysAgo: 8,
+    },
+  ];
 
   const conn = await pool.getConnection();
   try {
     await conn.beginTransaction();
 
-    const subtotal = products.reduce((sum, p) => sum + p.price, 0);
-    const shippingCost = 15000;
-    const total = subtotal + shippingCost;
-
-    const [orderResult] = await conn.query(
-      `INSERT INTO orders (customer_id, reference, status, subtotal, shipping_cost, total, shipping_name, shipping_email, shipping_phone, shipping_address, shipping_city)
-       VALUES (?, 'STK-DEMO01', 'paid', ?, ?, ?, 'Cliente de Prueba', ?, '3001234567', 'Calle 10 # 20-30', 'Bogotá')`,
-      [customerId, subtotal, shippingCost, total, email]
-    );
-    const orderId = orderResult.insertId;
-
-    for (const p of products) {
+    for (const demo of DEMO_ORDERS) {
+      const p = products[demo.productIndex];
       const colors = typeof p.colors === 'string' ? JSON.parse(p.colors) : p.colors;
       const sizes = typeof p.sizes === 'string' ? JSON.parse(p.sizes) : p.sizes;
+      const shippingCost = 15000;
+      const total = p.price + shippingCost;
+
+      const [orderResult] = await conn.query(
+        `INSERT INTO orders (customer_id, reference, status, subtotal, shipping_cost, total, shipping_name, shipping_email, shipping_phone, shipping_address, shipping_city)
+         VALUES (?, ?, 'paid', ?, ?, ?, 'Cliente de Prueba', ?, '3001234567', 'Calle 10 # 20-30', 'Bogotá')`,
+        [customerId, demo.reference, p.price, shippingCost, total, email]
+      );
+      const orderId = orderResult.insertId;
+
       await conn.query(
         'INSERT INTO order_items (order_id, product_id, product_name, color, size, quantity, unit_price) VALUES (?, ?, ?, ?, ?, 1, ?)',
         [orderId, p.id, p.name, colors[0]?.name || 'Único', sizes[0] || 'M', p.price]
       );
-    }
 
-    const [shipmentResult] = await conn.query(
-      "INSERT INTO shipments (order_id, status, carrier) VALUES (?, 'shipped', 'Servientrega')",
-      [orderId]
-    );
-    const shipmentId = shipmentResult.insertId;
-
-    // Fechas escalonadas: pagado hace 3 días, preparado hace 2, enviado ayer —
-    // así la línea de seguimiento muestra pasos ya cumplidos y pasos pendientes.
-    for (const [status, daysAgo] of [['pending', 3], ['preparing', 2], ['shipped', 1]]) {
-      await conn.query(
-        "INSERT INTO shipment_status_history (shipment_id, status, actor_type, created_at) VALUES (?, ?, 'system', DATE_SUB(NOW(), INTERVAL ? DAY))",
-        [shipmentId, status, daysAgo]
+      const [shipmentResult] = await conn.query(
+        'INSERT INTO shipments (order_id, status, carrier) VALUES (?, ?, ?)',
+        [orderId, demo.shipmentStatus, 'Servientrega']
       );
+      const shipmentId = shipmentResult.insertId;
+
+      for (const [status, daysAgo] of demo.history) {
+        await conn.query(
+          "INSERT INTO shipment_status_history (shipment_id, status, actor_type, created_at) VALUES (?, ?, 'system', DATE_SUB(NOW(), INTERVAL ? DAY))",
+          [shipmentId, status, daysAgo]
+        );
+      }
+
+      if (demo.deliveredDaysAgo != null) {
+        await conn.query('UPDATE shipments SET delivered_at = DATE_SUB(NOW(), INTERVAL ? DAY) WHERE id = ?', [demo.deliveredDaysAgo, shipmentId]);
+      }
+      if (demo.receivedDaysAgo != null) {
+        await conn.query(
+          'UPDATE shipments SET received_at = DATE_SUB(NOW(), INTERVAL ? DAY), received_source = ? WHERE id = ?',
+          [demo.receivedDaysAgo, demo.receivedSource, shipmentId]
+        );
+      }
     }
 
     await conn.commit();
-    console.log('Pedido de ejemplo "STK-DEMO01" creado para el cliente de prueba (envío en estado "shipped").');
+    console.log('3 pedidos de ejemplo creados para el cliente de prueba (STK-DEMO01 shipped, STK-DEMO02 received hace 20 días, STK-DEMO03 delivered hace 8 días).');
   } catch (err) {
     await conn.rollback();
     throw err;

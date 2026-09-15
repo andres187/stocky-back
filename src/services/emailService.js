@@ -71,3 +71,40 @@ export async function sendOtpCode({ to, code, expiresMinutes }) {
     throw new Error(`Resend respondió ${res.status}`);
   }
 }
+
+// Resolución de una solicitud de devolución. Best-effort como el correo de
+// pedido: es informativo, y que no salga no debe hacer fallar la decisión del
+// admin, que ya quedó guardada.
+export async function sendReturnResolved({ to, fullName, reference, status, resolutionNote }) {
+  if (!config.resend.apiKey || !config.resend.fromEmail) {
+    console.warn(JSON.stringify({ level: 'warn', scope: 'email', reference, message: 'RESEND_API_KEY/RESEND_FROM_EMAIL no configurados, correo omitido.' }));
+    return;
+  }
+
+  const aprobada = status === 'approved';
+  const html = `
+    <p>Hola ${fullName},</p>
+    <p>Tu solicitud de devolución del pedido <b>${reference}</b> fue
+    <b>${aprobada ? 'aprobada' : 'rechazada'}</b>.</p>
+    ${resolutionNote ? `<p>${resolutionNote}</p>` : ''}
+    ${aprobada ? '<p>Te contactaremos para coordinar la recogida de la prenda.</p>' : ''}
+  `;
+
+  const res = await fetch('https://api.resend.com/emails', {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${config.resend.apiKey}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      from: config.resend.fromEmail,
+      to,
+      subject: `Devolución del pedido ${reference}: ${aprobada ? 'aprobada' : 'rechazada'}`,
+      html,
+    }),
+  });
+
+  if (!res.ok) {
+    throw new Error(`Resend respondió ${res.status}`);
+  }
+}

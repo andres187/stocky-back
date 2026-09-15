@@ -13,6 +13,14 @@ const checkoutLimiter = rateLimit({
   message: { error: 'Demasiados intentos de pago. Espera unos minutos y vuelve a intentar.' },
 });
 
+const writeLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  limit: 30,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: 'Demasiadas solicitudes. Espera unos minutos y vuelve a intentar.' },
+});
+
 ordersRouter.post('/checkout', requireCustomerAuth, checkoutLimiter, async (req, res) => {
   const body = req.body || {};
   const order = await ordersService.checkout(
@@ -32,4 +40,10 @@ ordersRouter.get('/', requireCustomerAuth, async (req, res) => {
 
 ordersRouter.get('/:id', requireCustomerAuth, async (req, res) => {
   res.json(await ordersService.getForCustomer(req.customer.sub, req.params.id));
+});
+
+// Confirmación de recibido. Única mutación de un pedido que puede hacer el
+// cliente; de ahí el rate limit, igual que el resto de rutas de escritura.
+ordersRouter.post('/:id/recibido', requireCustomerAuth, writeLimiter, async (req, res) => {
+  res.json(await ordersService.confirmReceived(req.customer.sub, req.params.id));
 });

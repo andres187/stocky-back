@@ -371,3 +371,25 @@ export async function getForCustomer(customerId, orderId) {
 
   return serialize(order, items, shipment, payments[0], history);
 }
+
+// Confirmación de recibido por parte del comprador. Es la primera (y única)
+// mutación de un pedido que puede hacer un cliente. Arranca la retención de
+// pago al vendedor: a partir de aquí corren RECEIPT_HOLD_DAYS días.
+export async function confirmReceived(customerId, orderId) {
+  const [rows] = await pool.query(
+    `SELECT sh.id AS shipment_id
+     FROM orders o JOIN shipments sh ON sh.order_id = o.id
+     WHERE o.id = ? AND o.customer_id = ?`,
+    [orderId, customerId]
+  );
+  // 404 y no 403 si no es suyo, igual que getForCustomer.
+  if (!rows[0]) throw new HttpError(404, 'Pedido no encontrado.');
+
+  await shipmentsService.updateStatus(
+    rows[0].shipment_id,
+    { status: 'received', receivedSource: 'customer' },
+    { type: 'customer', id: customerId }
+  );
+
+  return getForCustomer(customerId, orderId);
+}

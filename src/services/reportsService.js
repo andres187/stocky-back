@@ -33,6 +33,41 @@ export const COMMISSION = `ROUND(${GROSS} * COALESCE(oi.commission_rate, 0) / 10
 // Cantidad mínima de unidades en una variante para dejar de considerarla "stock bajo".
 export const LOW_STOCK_THRESHOLD = 3;
 
+// Días que se retiene el pago al vendedor después de que el comprador confirma
+// que recibió el pedido. Es la ventana en la que puede pedir una devolución.
+export const RECEIPT_HOLD_DAYS = 15;
+
+// Si el comprador nunca confirma, se da por recibido a los N días de "entregado"
+// (ver src/scripts/autoConfirmDeliveries.js). Sin esto la plata del vendedor
+// quedaría congelada para siempre por un cliente que simplemente no vuelve.
+export const AUTO_CONFIRM_DAYS = 7;
+
+// Estado de pago de una venta. Es derivado, no una columna: el paso del tiempo
+// solo ya mueve una venta de "retenida" a "disponible", sin que ningún job
+// tenga que ir marcando filas. Quien lo use debe tener en el FROM los alias
+// `sh` (shipments), `rr` (return_requests) y `spi` (seller_payout_items).
+//
+// Orden de los casos, de más fuerte a más débil: ya pagado gana sobre todo lo
+// demás; un envío cancelado/devuelto o una devolución aprobada bloquean; una
+// devolución abierta retiene aunque ya hayan pasado los 15 días.
+export const PAYOUT_STATE_SQL = `
+  CASE
+    WHEN spi.id IS NOT NULL THEN 'paid'
+    WHEN sh.status IN ('cancelled','returned') THEN 'blocked'
+    WHEN rr.status = 'approved' THEN 'blocked'
+    WHEN rr.status = 'pending' THEN 'on_hold'
+    WHEN sh.received_at IS NULL THEN 'pending'
+    WHEN sh.received_at > DATE_SUB(NOW(), INTERVAL ${RECEIPT_HOLD_DAYS} DAY) THEN 'on_hold'
+    ELSE 'available'
+  END`;
+
+// JOINs que PAYOUT_STATE_SQL necesita. Se exportan juntos para que no se pueda
+// usar la expresión sin ellos (daría un error de SQL, pero mejor no llegar ahí).
+export const PAYOUT_STATE_JOINS = `
+  LEFT JOIN shipments sh ON sh.order_id = o.id
+  LEFT JOIN return_requests rr ON rr.order_id = o.id
+  LEFT JOIN seller_payout_items spi ON spi.order_item_id = oi.id`;
+
 function sellerFilter(sellerId) {
   if (sellerId == null) return ['', []];
   return [' AND oi.seller_id = ?', [sellerId]];
